@@ -53,6 +53,42 @@ This is intentionally modest and readable—meant to be a solid base for deeper 
 - Visualization layers for navigation graphs / pathfinding
 - Optional DX9 proxy mode (`d3d9.dll`) for zero-setup injection
 
+## Perf metrics (branch `perf-metrics`)
+
+Read-only telemetry; nothing changes how the game renders or simulates.
+
+- Per frame (frame = `Present` to `Present`): frame time, time inside `Present`, time inside `EndScene`,
+  time between `EndScene` calls, overlay cost.
+- Per-frame counters: `BeginScene`, `DrawIndexedPrimitive`, `DrawPrimitive`, `DrawPrimitiveUP`,
+  `DrawIndexedPrimitiveUP`, primitives, `SetTexture`, `Set{Vertex,Pixel}ShaderConstantF` (calls + vec4 count).
+  Draw calls made by the overlay itself are excluded.
+- Frame-time histogram (<8.3, <16.7, <33.3, <50, <100, <250, <500, <1000, >=1000 ms) and a 600-frame plot.
+- Process virtual address space in use (relevant for LARGE_ADDRESS_AWARE tests).
+- Per-thread CPU usage once per second (which thread is busy, which one renders).
+- Loaded module list written to the log once (which DLL copies the loader picked).
+
+Hotkeys: `F9` record on/off, `F8` marker, `F10` reset histogram, `END` unload.
+Recording writes `SH2Perf_<timestamp>_frames.csv` and `_threads.csv` next to the game exe.
+
+### Build (CMake, 32-bit)
+
+```
+cmake -S . -B build -A Win32
+cmake --build build --config Release
+```
+
+Produces `build/Release/Stronghold2AnalyseHub.dll` (static CRT) and `build/Release/SH2Launcher.exe`.
+
+### Run
+
+```
+SH2Launcher.exe "C:\path\to\Stronghold2.exe" [path\to\Stronghold2AnalyseHub.dll]
+```
+
+The launcher starts the game suspended, injects the DLL, waits until the `Direct3DCreate9` hook is
+installed and then resumes the game. Steam must be running; when the game is started directly,
+put a `steam_appid.txt` containing `40960` next to `Stronghold2.exe`.
+
 ---
 
 ## Notes
