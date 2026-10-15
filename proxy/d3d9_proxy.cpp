@@ -22,7 +22,6 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
-#include <intrin.h>
 
 // Resolved export addresses of the real d3d9, indexed like kExports.
 // File scope (not in the namespace) so the naked stubs can address it from asm.
@@ -212,14 +211,27 @@ PROXY_STUB(16, PSGPSampleTexture)
 extern "C" void* WINAPI Proxy_Direct3DCreate9(UINT sdkVersion)
 {
     EnsureReal();
-    // Which module asks (the game exe and dxrenderer.dll both import it)?
-    HMODULE caller = nullptr;
-    wchar_t callerPath[MAX_PATH] = L"?";
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            static_cast<LPCWSTR>(_ReturnAddress()), &caller))
-        GetModuleFileNameW(caller, callerPath, MAX_PATH);
-    const wchar_t* callerName = wcsrchr(callerPath, L'\\');
-    Log(L"Direct3DCreate9(SDK=%u) called from %s", sdkVersion, callerName ? callerName + 1 : callerPath);
+    // Which module asks (the game exe and dxrenderer.dll both import it)? Windows
+    // compatibility shims (apphelp.dll / AcLayers.dll) may sit in between, so log
+    // the chain of distinct calling modules, innermost first.
+    void* frames[12];
+    const USHORT n = RtlCaptureStackBackTrace(0, 12, frames, nullptr);
+    wchar_t chain[512] = L"";
+    HMODULE last = g_self;
+    int listed = 0;
+    for (USHORT i = 0; i < n && listed < 4; ++i) {
+        HMODULE m = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                static_cast<LPCWSTR>(frames[i]), &m) || m == last)
+            continue;
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(m, path, MAX_PATH);
+        const wchar_t* name = wcsrchr(path, L'\\');
+        if (listed++) wcscat_s(chain, L" <- ");
+        wcscat_s(chain, name ? name + 1 : path);
+        last = m;
+    }
+    Log(L"Direct3DCreate9(SDK=%u) called from %s", sdkVersion, chain[0] ? chain : L"?");
     if (WaitForSingleObject(g_hubDone, kHubWaitMs + 5000) != WAIT_OBJECT_0)
         Log(L"Direct3DCreate9: hub start still pending, continuing without waiting");
     using Create_t = void*(WINAPI*)(UINT);
