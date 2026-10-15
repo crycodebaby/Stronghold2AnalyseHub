@@ -1,10 +1,12 @@
 #include "../pch.h"
 #include "logger.h"
 #include "metrics.h"
+#include "capture.h"
+#include "config.h"
+#include "provenance.h"
 #include "sampler.h"
 #include "../hooks/d3d9_hooks.h"
 
-#include <bcrypt.h>
 #include <exception>
 
 // Keep DllMain minimal. Spin up a worker thread for initialization and lifetime.
@@ -22,41 +24,15 @@ namespace
         { "f3ccdf9bb41158202dffc000e5f2036a82f4c1ce8c5c89462f6140000f32d34b", "Steam 1.5 (no LAA)" },
     };
 
-    // SHA-256 of a file as lowercase hex; empty string on error.
-    std::string Sha256File(const wchar_t* path)
-    {
-        std::string hex;
-        HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (file == INVALID_HANDLE_VALUE) return hex;
-
-        BCRYPT_ALG_HANDLE alg = nullptr;
-        BCRYPT_HASH_HANDLE hash = nullptr;
-        if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0 &&
-            BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
-            std::vector<UCHAR> buf(1 << 20);
-            DWORD got = 0;
-            bool ok = true;
-            while (ok && ReadFile(file, buf.data(), static_cast<DWORD>(buf.size()), &got, nullptr) && got)
-                ok = BCryptHashData(hash, buf.data(), got, 0) == 0;
-            UCHAR digest[32];
-            if (ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0) {
-                char two[3];
-                for (UCHAR b : digest) { sprintf_s(two, "%02x", b); hex += two; }
-            }
-        }
-        if (hash) BCryptDestroyHash(hash);
-        if (alg) BCryptCloseAlgorithmProvider(alg, 0);
-        CloseHandle(file);
-        return hex;
-    }
-
     // Log only: an unknown build may still work, but addresses in FINDINGS/FUNCTIONS may not match.
     void LogExeBuild()
     {
-        wchar_t exe[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        const std::string sha = Sha256File(exe);
+        // The hash comes from Provenance (hashed once, in the background, at hub start); the same value
+        // goes into every recording's manifest.
+        std::string sha;
+        if (Provenance::Wait(30000))
+            for (const auto& f : Provenance::Get().files)
+                if (f.role == "game_exe") sha = f.sha256;
         const char* known = nullptr;
         for (const auto& b : kKnownBuilds)
             if (sha == b.sha256) known = b.name;
@@ -87,6 +63,9 @@ namespace
         OutputDebugStringW(L"SH2Hub: Logger::Init returned\n");
         Logger::Info("DLL attached (hub %s).", HUB_GIT_COMMIT);
 
+        Config::Init();                                   // measurement switches (config.h)
+        Provenance::Start();                              // background SHA-256 of exe/DLLs for the manifests (provenance.h)
+        Capture::Init([] { return Metrics::Markers(); }); // capture thread: files, polling (capture.h)
         const bool installed = D3D9Hooks::Install();
         Sampler::Init();
 
@@ -110,11 +89,16 @@ namespace
         uint64_t autoStart = 0;
         if (autoFrames) Logger::Info("SH2HUB_AUTORECORD=%llu frames", autoFrames);
 
+        // Watchdog: hooks are in, the device exists, but no frame completed. Without the overlay there
+        // is no EndScene fallback for a game that never calls Present.
+        const DWORD loopStart = GetTickCount();
+        bool warnedNoFrames = false;
+
         // Simple control loop.
         // END unload, F9 recording on/off, F8 marker, F10 reset histogram.
         while (g_running.load()) {
             if (autoFrames) {
-                const uint64_t frame = Metrics::Last().frameIndex;
+                const uint64_t frame = Metrics::FrameIndex();
                 if (!autoStart && frame >= 30 && !Metrics::Recording()) {
                     Metrics::ToggleRecording();
                     autoStart = frame;
@@ -131,6 +115,11 @@ namespace
             if (GetAsyncKeyState(VK_F9) & 1) Metrics::ToggleRecording();
             if (GetAsyncKeyState(VK_F8) & 1) Metrics::AddMarker();
             if (GetAsyncKeyState(VK_F10) & 1) Metrics::ResetHistogram();
+            if (!warnedNoFrames && GetTickCount() - loopStart > 30000 && D3D9Hooks::GetDevice() &&
+                Metrics::FrameIndex() == 0) {
+                warnedNoFrames = true;
+                Logger::Warn("No frame completed 30 s after device creation: Present not seen (try overlay=1 for the EndScene fallback).");
+            }
             Sleep(50);
         }
 

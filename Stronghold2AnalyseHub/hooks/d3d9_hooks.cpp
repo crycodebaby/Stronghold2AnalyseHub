@@ -1,6 +1,8 @@
 #include "d3d9_hooks.h"
 #include "../core/logger.h"
 #include "../core/metrics.h"
+#include "../core/capture.h"
+#include "../core/config.h"
 
 // imgui_impl_win32.h keeps this declaration under #if 0 (to avoid pulling in
 // windows.h); the backend expects users to forward-declare it.
@@ -61,13 +63,15 @@ namespace
     DrawIndexedPrimitiveUP_t s_DrawIndexedPrimitiveUP_Orig = nullptr;
     SetShaderConstantF_t     s_SetVSConstF_Orig = nullptr;
     SetShaderConstantF_t     s_SetPSConstF_Orig = nullptr;
+    bool                     s_hooksInstalled = false;
+
+    LARGE_INTEGER g_qpcFreq{};      // constant for the life of the process; queried once in Install
 
     double ElapsedMs(const LARGE_INTEGER& start)
     {
-        LARGE_INTEGER now, freq;
+        LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        QueryPerformanceFrequency(&freq);
-        return 1000.0 * static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(freq.QuadPart);
+        return 1000.0 * static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(g_qpcFreq.QuadPart);
     }
 
     // Writes every loaded module path to the log once (answers which CRT
@@ -164,11 +168,17 @@ namespace
         ImGui::Text("Frame %.2f ms (%.1f FPS)  Present %.2f  EndScene %.2f  between EndScene %.2f  overlay %.2f",
             t.frameMs, t.frameMs > 0 ? 1000.0 / t.frameMs : 0.0, t.presentMs, t.endSceneMs,
             t.betweenEndSceneMs, t.overlayMs);
-        ImGui::Text("Scenes %u  DIP %u  DP %u  DPUP %u  DIPUP %u  prims %llu",
-            c.scenes, c.drawIndexed, c.draw, c.drawUP, c.drawIndexedUP, c.primitives);
-        ImGui::Text("SetTexture %u  VSConstF %u (%u vec4)  PSConstF %u (%u vec4)",
-            c.setTexture, c.vsConstCalls, c.vsConstVec4, c.psConstCalls, c.psConstVec4);
-        ImGui::Text("VA used %.0f MB", s.vaUsedMb);
+        if (Config::Get().counters) {
+            ImGui::Text("Scenes %u  DIP %u  DP %u  DPUP %u  DIPUP %u  prims %llu",
+                c.scenes, c.drawIndexed, c.draw, c.drawUP, c.drawIndexedUP, c.primitives);
+            ImGui::Text("SetTexture %u  VSConstF %u (%u vec4)  PSConstF %u (%u vec4)",
+                c.setTexture, c.vsConstCalls, c.vsConstVec4, c.psConstCalls, c.psConstVec4);
+        }
+        else {
+            ImGui::TextUnformatted("Graphics counters: off");
+        }
+        if (Config::Get().poll && s.vaUsedMb > 0) ImGui::Text("VA used %.0f MB (polled while recording)", s.vaUsedMb);
+        else ImGui::TextUnformatted("VA used: not polled (poll off or not recording)");
 
         int count = 0, offset = 0;
         const float* hist = Metrics::FrameHistory(count, offset);
@@ -186,7 +196,12 @@ namespace
             h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
 
         ImGui::Separator();
-        ImGui::Text("Recording: %s  markers: %u", Metrics::Recording() ? "ON" : "off", Metrics::Markers());
+        const Capture::Status cs = Capture::GetStatus();
+        ImGui::Text("Recording: %s  markers: %u  written %llu  dropped %llu",
+            cs.recording ? "ON" : "off", Metrics::Markers(), cs.written, cs.dropped);
+        if (cs.openFailed) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "LAST START FAILED: files could not be opened (see log)");
+        if (cs.writeFailed || cs.writeErrors) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "WRITE ERROR: recording incomplete (see log)");
+        if (cs.dropped) ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "frames dropped: capture ring was full");
         ImGui::TextUnformatted("F9 record on/off   F8 marker   F10 reset histogram   END unload");
     }
 
@@ -335,29 +350,39 @@ namespace
             g_device = *outDevice;
             g_hwnd = hFocusWindow;
 
-            // Hook WndProc once we know the correct HWND.
-            if (g_hwnd && !g_prevWndProc) {
+            const Config::Flags& cfg = Config::Get();
+
+            // Hook WndProc once we know the correct HWND (overlay input only).
+            if (cfg.overlay && g_hwnd && !g_prevWndProc) {
                 g_prevWndProc = reinterpret_cast<WNDPROC>(
                     SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(WndProc_Hook)));
                 Logger::Info("WndProc hooked (old=%p new=%p)", g_prevWndProc, WndProc_Hook);
             }
 
-            // Hook device methods. All hooks only count/time and then call the original.
-            // Guard against a second CreateDevice: the slots are shared code in d3d9.dll.
-            if (!s_EndScene_Orig) {
+            // Hook device methods, each group only if its switch is on (Config). All hooks only
+            // count/time and then call the original. Guard against a second CreateDevice: the
+            // slots are shared code in d3d9.dll.
+            if (!s_hooksInstalled) {
+                s_hooksInstalled = true;
                 void** vtbl = *reinterpret_cast<void***>(g_device);
-                HookSlot(vtbl, kReset, reinterpret_cast<LPVOID>(Reset_Hook), &s_Reset_Orig, "Reset");
-                HookSlot(vtbl, kEndScene, reinterpret_cast<LPVOID>(EndScene_Hook), &s_EndScene_Orig, "EndScene");
-                HookSlot(vtbl, kPresent, reinterpret_cast<LPVOID>(Present_Hook), &s_Present_Orig, "Present");
-                HookSlot(vtbl, kBeginScene, reinterpret_cast<LPVOID>(BeginScene_Hook), &s_BeginScene_Orig, "BeginScene");
-                HookSlot(vtbl, kSetTexture, reinterpret_cast<LPVOID>(SetTexture_Hook), &s_SetTexture_Orig, "SetTexture");
-                HookSlot(vtbl, kDrawPrimitive, reinterpret_cast<LPVOID>(DrawPrimitive_Hook), &s_DrawPrimitive_Orig, "DrawPrimitive");
-                HookSlot(vtbl, kDrawIndexedPrimitive, reinterpret_cast<LPVOID>(DrawIndexedPrimitive_Hook), &s_DrawIndexedPrimitive_Orig, "DrawIndexedPrimitive");
-                HookSlot(vtbl, kDrawPrimitiveUP, reinterpret_cast<LPVOID>(DrawPrimitiveUP_Hook), &s_DrawPrimitiveUP_Orig, "DrawPrimitiveUP");
-                HookSlot(vtbl, kDrawIndexedPrimitiveUP, reinterpret_cast<LPVOID>(DrawIndexedPrimitiveUP_Hook), &s_DrawIndexedPrimitiveUP_Orig, "DrawIndexedPrimitiveUP");
-                HookSlot(vtbl, kSetVertexShaderConstantF, reinterpret_cast<LPVOID>(SetVSConstF_Hook), &s_SetVSConstF_Orig, "SetVertexShaderConstantF");
-                HookSlot(vtbl, kSetPixelShaderConstantF, reinterpret_cast<LPVOID>(SetPSConstF_Hook), &s_SetPSConstF_Orig, "SetPixelShaderConstantF");
-                Logger::Info("Device hooks installed (behaviorFlags=0x%08lx).", behaviorFlags);
+                if (cfg.frameTime)
+                    HookSlot(vtbl, kPresent, reinterpret_cast<LPVOID>(Present_Hook), &s_Present_Orig, "Present");
+                if (cfg.overlay) {
+                    HookSlot(vtbl, kReset, reinterpret_cast<LPVOID>(Reset_Hook), &s_Reset_Orig, "Reset");
+                    HookSlot(vtbl, kEndScene, reinterpret_cast<LPVOID>(EndScene_Hook), &s_EndScene_Orig, "EndScene");
+                }
+                if (cfg.counters) {
+                    HookSlot(vtbl, kBeginScene, reinterpret_cast<LPVOID>(BeginScene_Hook), &s_BeginScene_Orig, "BeginScene");
+                    HookSlot(vtbl, kSetTexture, reinterpret_cast<LPVOID>(SetTexture_Hook), &s_SetTexture_Orig, "SetTexture");
+                    HookSlot(vtbl, kDrawPrimitive, reinterpret_cast<LPVOID>(DrawPrimitive_Hook), &s_DrawPrimitive_Orig, "DrawPrimitive");
+                    HookSlot(vtbl, kDrawIndexedPrimitive, reinterpret_cast<LPVOID>(DrawIndexedPrimitive_Hook), &s_DrawIndexedPrimitive_Orig, "DrawIndexedPrimitive");
+                    HookSlot(vtbl, kDrawPrimitiveUP, reinterpret_cast<LPVOID>(DrawPrimitiveUP_Hook), &s_DrawPrimitiveUP_Orig, "DrawPrimitiveUP");
+                    HookSlot(vtbl, kDrawIndexedPrimitiveUP, reinterpret_cast<LPVOID>(DrawIndexedPrimitiveUP_Hook), &s_DrawIndexedPrimitiveUP_Orig, "DrawIndexedPrimitiveUP");
+                    HookSlot(vtbl, kSetVertexShaderConstantF, reinterpret_cast<LPVOID>(SetVSConstF_Hook), &s_SetVSConstF_Orig, "SetVertexShaderConstantF");
+                    HookSlot(vtbl, kSetPixelShaderConstantF, reinterpret_cast<LPVOID>(SetPSConstF_Hook), &s_SetPSConstF_Orig, "SetPixelShaderConstantF");
+                }
+                Logger::Info("Device hooks installed (behaviorFlags=0x%08lx): Present=%d overlay(EndScene,Reset,WndProc)=%d counters(8 slots)=%d.",
+                    behaviorFlags, cfg.frameTime, cfg.overlay, cfg.counters);
                 LogLoadedModules();
             }
         }
@@ -388,6 +413,12 @@ namespace
 
 bool D3D9Hooks::Install()
 {
+    QueryPerformanceFrequency(&g_qpcFreq);
+    if (!Config::NeedsHooks()) {
+        // Everything off: the hub is loaded but touches nothing in the game.
+        Logger::Info("All measurement switches off: no D3D9 hook installed.");
+        return true;
+    }
     if (MH_Initialize() != MH_OK) {
         Logger::Error("MinHook initialization failed.");
         return false;

@@ -1,4 +1,5 @@
 #include "metrics.h"
+#include "capture.h"
 #include "logger.h"
 #include "sampler.h"
 
@@ -7,10 +8,9 @@
 // - All D3D9 calls of this game are assumed to come from one render thread.
 //   Counters are plain integers; control requests from the hotkey thread go
 //   through atomics and are applied at the next frame boundary.
-// - CSV rows are buffered in memory and written about once per second to keep
-//   file I/O out of the measured frame times as far as possible.
-// - Thread CPU sampling (once per second) answers "which thread is busy?"
-//   without touching game code.
+// - The render thread does no file I/O, no formatting, no system queries and no
+//   waiting here: a finished frame is copied into the capture ring (capture.h) and
+//   everything else (CSV, thread CPU, address space, files) happens on the capture thread.
 // -----------------------------------------------------------------------------
 
 const double Metrics::kBucketUpperMs[Metrics::kBucketCount - 1] =
@@ -34,26 +34,16 @@ namespace
     int64_t g_lastEndSceneExit = 0;
     int     g_endScenesWithoutPresent = 0;
     uint64_t g_frameIndex = 0;
+    uint32_t g_lastRenderTid = 0;
+    std::atomic<uint64_t> g_frameIndexShared{ 0 };
 
     // Accumulated per frame (EndScene may run more than once per frame).
     double g_frameEndSceneMs = 0;
     double g_frameBetweenMs = 0;
     double g_frameOverlayMs = 0;
 
-    std::atomic<bool>     g_wantToggle{ false };
     std::atomic<bool>     g_wantReset{ false };
     std::atomic<uint32_t> g_markers{ 0 };
-
-    bool        g_recording = false;
-    FILE*       g_frameCsv = nullptr;
-    FILE*       g_threadCsv = nullptr;
-    std::string g_frameBuf;
-    int64_t     g_lastFlushTick = 0;
-    int64_t     g_recordStartTick = 0;
-
-    // Thread sampling state: tid -> last (kernel+user) 100ns units.
-    std::vector<std::pair<DWORD, uint64_t>> g_threadPrev;
-    int64_t g_lastThreadSampleTick = 0;
 
     int64_t Now()
     {
@@ -67,156 +57,7 @@ namespace
         return 1000.0 * static_cast<double>(ticks) / static_cast<double>(g_freq.QuadPart);
     }
 
-    double VaUsedMb()
-    {
-        MEMORYSTATUSEX ms{ sizeof(ms) };
-        if (!GlobalMemoryStatusEx(&ms)) return 0;
-        return static_cast<double>(ms.ullTotalVirtual - ms.ullAvailVirtual) / (1024.0 * 1024.0);
-    }
-
-    // Current recording, for latest.json.
-    std::string g_recordStem;      // e.g. SH2Perf_20261015_120000
-    std::string g_recordStartIso;
-    bool        g_samplesWritten = false;
-    uint64_t    g_recordStartFrame = 0;
-
-    std::string LocalIso()
-    {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02u", st.wYear, st.wMonth, st.wDay,
-            st.wHour, st.wMinute, st.wSecond);
-        return buf;
-    }
-
-    std::wstring CaptureBasePath()
-    {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char stem[64];
-        snprintf(stem, sizeof(stem), "SH2Perf_%04u%02u%02u_%02u%02u%02u", st.wYear, st.wMonth, st.wDay,
-            st.wHour, st.wMinute, st.wSecond);
-        g_recordStem = stem;
-        return Logger::OutputDir() + std::wstring(g_recordStem.begin(), g_recordStem.end());
-    }
-
-    // Describes the last finished recording so tools/ingest.py needs no guessing.
-    // File names only (no absolute paths) to keep personal paths out of data.
-    void WriteLatestJson()
-    {
-        FILE* f = nullptr;
-        _wfopen_s(&f, (Logger::OutputDir() + L"latest.json").c_str(), L"wb");
-        if (!f) return;
-        fprintf(f,
-            "{\n"
-            "  \"frames_csv\": \"%s_frames.csv\",\n"
-            "  \"threads_csv\": \"%s_threads.csv\",\n"
-            "  \"log\": \"Stronghold2AnalyseHub.log\",\n"
-            "  \"start\": \"%s\",\n"
-            "  \"stop\": \"%s\",\n"
-            "  \"frames\": %llu,\n"
-            "  \"markers\": %u,\n"
-            "%s"
-            "  \"hub_commit\": \"%s\"\n"
-            "}\n",
-            g_recordStem.c_str(), g_recordStem.c_str(), g_recordStartIso.c_str(), LocalIso().c_str(),
-            g_frameIndex - g_recordStartFrame, g_markers.load(),
-            g_samplesWritten ? ("  \"samples_csv\": \"" + g_recordStem + "_samples.csv\",\n").c_str() : "",
-            HUB_GIT_COMMIT);
-        fclose(f);
-    }
-
-    void FlushFrameBuffer()
-    {
-        if (g_frameCsv && !g_frameBuf.empty()) {
-            fwrite(g_frameBuf.data(), 1, g_frameBuf.size(), g_frameCsv);
-            fflush(g_frameCsv);
-        }
-        g_frameBuf.clear();
-    }
-
-    void StopRecording()
-    {
-        if (!g_recording) return;
-        FlushFrameBuffer();
-        if (g_frameCsv) fclose(g_frameCsv);
-        if (g_threadCsv) fclose(g_threadCsv);
-        g_frameCsv = g_threadCsv = nullptr;
-        g_recording = false;
-        g_samplesWritten = Sampler::End();
-        WriteLatestJson();
-        Logger::Info("Recording stopped at frame %llu.", g_frameIndex);
-    }
-
-    void StartRecording()
-    {
-        const std::wstring base = CaptureBasePath();
-        _wfopen_s(&g_frameCsv, (base + L"_frames.csv").c_str(), L"wb");
-        _wfopen_s(&g_threadCsv, (base + L"_threads.csv").c_str(), L"wb");
-        if (!g_frameCsv || !g_threadCsv) {
-            Logger::Error("Could not open capture CSV files.");
-            StopRecording();
-            return;
-        }
-        fputs("frame,t_s,frame_ms,present_ms,endscene_ms,between_endscene_ms,overlay_ms,"
-              "scenes,dip,dp,dpup,dipup,prims,settex,vsconst_calls,vsconst_vec4,"
-              "psconst_calls,psconst_vec4,va_used_mb,marker\n", g_frameCsv);
-        fputs("t_s,tid,cpu_pct,is_render_thread\n", g_threadCsv);
-        g_recordStartTick = Now();
-        g_recordStartIso = LocalIso();
-        g_recordStartFrame = g_frameIndex;
-        Sampler::Begin(base + L"_samples.csv", [] { return g_markers.load(); });
-        g_lastFlushTick = g_recordStartTick;
-        g_recording = true;
-        Logger::Info("Recording started at frame %llu.", g_frameIndex);
-    }
-
-    void SampleThreads(int64_t now)
-    {
-        const double intervalMs = ToMs(now - g_lastThreadSampleTick);
-        g_lastThreadSampleTick = now;
-
-        std::vector<std::pair<DWORD, uint64_t>> current;
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap == INVALID_HANDLE_VALUE) return;
-
-        const DWORD pid = GetCurrentProcessId();
-        THREADENTRY32 te{ sizeof(te) };
-        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
-            if (te.th32OwnerProcessID != pid) continue;
-            HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
-            if (!h) continue;
-            FILETIME c, e, k, u;
-            if (GetThreadTimes(h, &c, &e, &k, &u)) {
-                const uint64_t kt = (static_cast<uint64_t>(k.dwHighDateTime) << 32) | k.dwLowDateTime;
-                const uint64_t ut = (static_cast<uint64_t>(u.dwHighDateTime) << 32) | u.dwLowDateTime;
-                current.emplace_back(te.th32ThreadID, kt + ut);
-            }
-            CloseHandle(h);
-        }
-        CloseHandle(snap);
-
-        if (g_recording && g_threadCsv && intervalMs > 0) {
-            const double tS = ToMs(now - g_recordStartTick) / 1000.0;
-            for (const auto& [tid, total] : current) {
-                for (const auto& [ptid, ptotal] : g_threadPrev) {
-                    if (ptid != tid) continue;
-                    // 100ns units -> ms, relative to wall-clock interval.
-                    const double pct = 100.0 * (static_cast<double>(total - ptotal) / 10000.0) / intervalMs;
-                    if (pct >= 0.5) {
-                        fprintf(g_threadCsv, "%.3f,%lu,%.1f,%d\n", tS, tid, pct,
-                            tid == g_last.renderTid ? 1 : 0);
-                    }
-                    break;
-                }
-            }
-            fflush(g_threadCsv);
-        }
-        g_threadPrev = std::move(current);
-    }
-
-    // Closes the current frame: snapshot, histogram, CSV row, reset counters.
+    // Closes the current frame: snapshot, histogram, hand-over to the capture ring, reset counters.
     void EndFrame(int64_t now, double presentMs)
     {
         if (g_lastFrameTick != 0) {
@@ -229,8 +70,12 @@ namespace
             s.times.betweenEndSceneMs = g_frameBetweenMs;
             s.times.overlayMs = g_frameOverlayMs;
             s.renderTid = GetCurrentThreadId();
-            Sampler::SetTarget(s.renderTid);
-            s.vaUsedMb = (g_frameIndex % 30 == 0) ? VaUsedMb() : g_last.vaUsedMb;
+            if (s.renderTid != g_lastRenderTid) {
+                g_lastRenderTid = s.renderTid;
+                Sampler::SetTarget(s.renderTid);
+                Capture::SetRenderTid(s.renderTid);
+            }
+            s.vaUsedMb = Capture::VaUsedMb();          // last value polled by the capture thread
             g_last = s;
 
             int bucket = Metrics::kBucketCount - 1;
@@ -243,39 +88,34 @@ namespace
             g_historyOffset = (g_historyOffset + 1) % kHistory;
             if (g_historyCount < kHistory) ++g_historyCount;
 
-            if (g_recording) {
-                const auto& c = s.counters;
-                char row[512];
-                snprintf(row, sizeof(row),
-                    "%llu,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%u,%u,%llu,%u,%u,%u,%u,%u,%.0f,%u\n",
-                    s.frameIndex, ToMs(now - g_recordStartTick) / 1000.0,
-                    s.times.frameMs, s.times.presentMs, s.times.endSceneMs, s.times.betweenEndSceneMs,
-                    s.times.overlayMs, c.scenes, c.drawIndexed, c.draw, c.drawUP, c.drawIndexedUP,
-                    c.primitives, c.setTexture, c.vsConstCalls, c.vsConstVec4, c.psConstCalls,
-                    c.psConstVec4, s.vaUsedMb, g_markers.load());
-                g_frameBuf += row;
-                if (ToMs(now - g_lastFlushTick) > 1000.0) {
-                    FlushFrameBuffer();
-                    g_lastFlushTick = now;
-                }
+            if (const uint32_t gen = Capture::ActiveGen()) {
+                Capture::FrameRecord r;
+                r.frame = s.frameIndex;
+                r.tick = now;
+                r.gen = gen;
+                r.marker = g_markers.load(std::memory_order_relaxed);
+                r.frameMs = static_cast<float>(s.times.frameMs);
+                r.presentMs = static_cast<float>(s.times.presentMs);
+                r.endSceneMs = static_cast<float>(s.times.endSceneMs);
+                r.betweenEndSceneMs = static_cast<float>(s.times.betweenEndSceneMs);
+                r.overlayMs = static_cast<float>(s.times.overlayMs);
+                r.vaUsedMb = Capture::VaUsedMb();
+                r.counters = s.counters;
+                Capture::Push(r);                      // wait-free; counts a drop if the ring is full
             }
         }
-
-        if (ToMs(now - g_lastThreadSampleTick) > 1000.0) SampleThreads(now);
 
         // Apply control requests at the frame boundary.
         if (g_wantReset.exchange(false)) {
             g_histogram.fill(0);
             Logger::Info("Histogram reset at frame %llu.", g_frameIndex);
         }
-        if (g_wantToggle.exchange(false)) {
-            if (g_recording) StopRecording(); else StartRecording();
-        }
 
         g_current = {};
         g_frameEndSceneMs = g_frameBetweenMs = g_frameOverlayMs = 0;
         g_lastFrameTick = now;
         ++g_frameIndex;
+        g_frameIndexShared.store(g_frameIndex, std::memory_order_relaxed);
     }
 }
 
@@ -321,10 +161,11 @@ const float* Metrics::FrameHistory(int& count, int& offset)
     return g_history;
 }
 
-bool Metrics::Recording() { return g_recording; }
+bool Metrics::Recording() { return Capture::Recording(); }
 uint32_t Metrics::Markers() { return g_markers.load(); }
+uint64_t Metrics::FrameIndex() { return g_frameIndexShared.load(std::memory_order_relaxed); }
 
-void Metrics::ToggleRecording() { g_wantToggle.store(true); }
+void Metrics::ToggleRecording() { Capture::RequestToggle(); }
 void Metrics::ResetHistogram() { g_wantReset.store(true); }
 
 void Metrics::AddMarker()
@@ -333,4 +174,4 @@ void Metrics::AddMarker()
     Logger::Info("Marker %u set.", m);
 }
 
-void Metrics::Shutdown() { StopRecording(); }
+void Metrics::Shutdown() { Capture::Shutdown(); }

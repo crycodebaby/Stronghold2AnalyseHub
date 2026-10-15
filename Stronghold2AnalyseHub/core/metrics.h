@@ -63,12 +63,14 @@ namespace Metrics
     const float* FrameHistory(int& count, int& offset); // ring buffer of frame ms
     bool Recording();
     uint32_t Markers();
+    uint64_t FrameIndex();                      // any thread: frames completed so far
 
-    // Control (thread-safe; applied on the next frame).
+    // Control (thread-safe). Recording start/stop is executed by the capture thread (capture.h),
+    // the histogram reset is applied at the next frame boundary.
     void ToggleRecording();
     void ResetHistogram();
     void AddMarker();
 
-    // Close open CSV files.
+    // Finish an open recording and stop the capture thread.
     void Shutdown();
 }

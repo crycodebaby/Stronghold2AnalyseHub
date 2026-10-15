@@ -69,7 +69,33 @@ Read-only telemetry; nothing changes how the game renders or simulates.
 - Loaded module list written to the log once (which DLL copies the loader picked).
 
 Hotkeys: `F9` record on/off, `F8` marker, `F10` reset histogram, `END` unload.
-Recording writes `SH2Perf_<timestamp>_frames.csv` and `_threads.csv` next to the game exe.
+Recording writes `SH2Perf_<timestamp>_frames.csv` (and `_threads.csv` with `poll`, `_samples.csv` with the sampler)
+plus `latest.json` into the output dir (`SH2HUB_OUT`, `out=` in `SH2Proxy.ini`, default `SH2Perf_out`).
+
+### Measurement switches and capture pipeline
+
+What the hub does inside the game's frame is limited on purpose. Four independent switches decide which hooks
+exist at all (env `SH2HUB_<KEY>` > `SH2Proxy.ini` `[proxy]` > profile; values `1/0`, `on/off`):
+
+| Switch | Effect |
+|---|---|
+| `frametime` | `Present` hook: frame time + time inside `Present`; master switch of recording |
+| `counters` | hooks on BeginScene, SetTexture, DrawPrimitive*, DrawIndexedPrimitive*, Set{Vertex,Pixel}ShaderConstantF; off = not hooked |
+| `poll` | per-thread CPU and address space once per second, only while recording, on the capture thread |
+| `overlay` | ImGui window (EndScene, Reset, WndProc hooks); off = not hooked, EndScene timing columns are 0 |
+| `beep` | tone on recording start/stop (default on when the overlay is off) |
+
+`profile=full` (default, all four on) or `profile=min` (`frametime` only). All switches off = no hook installed.
+The sampling profiler stays separate (`SH2HUB_SAMPLE`, default off).
+
+The render thread only copies one fixed-size record per frame into a bounded lock-free ring (8,192 frames) and never
+waits. A low-priority capture thread formats the CSV, writes the files and does start/stop work. If the ring is full
+the frame is dropped and counted; drops, open failures and write errors are logged, shown in the overlay and written to
+`latest.json` (`capture_ok`, `frames_dropped`, `write_errors`, `modes`; `capture_version: 2`). The CSV columns are
+unchanged. Details and the compatibility rule: SH2-Perf `docs/FORMATS/HUB_CAPTURE.md`, decision D011.
+
+Tests without the game: `build/Release/capture_test.exe` (ring, overflow, open/write errors, lifecycle, push cost),
+`sampler_test.exe`, `standin_d3d9.exe`.
 
 ### Build (CMake, 32-bit)
 
@@ -139,3 +165,13 @@ abnormal program termination", empty log) because the logger locked its mutex tw
 ## License
 
 MIT for our code. ImGui and MinHook maintain their respective licenses—please see their repositories.
+
+## Recording provenance (perf-metrics branch, SH2-Perf D012)
+
+Every recording writes its own `<stem>_manifest.json` next to the CSVs: capture id, session, planned conditions from
+`SH2Proxy.ini [plan]` (`experiment`, `protocol`, `scenario`, `game_speed`, `paused`), the SHA-256 of the game exe, the hub
+DLL, the d3d9 files and the ini **as hashed when the hub was loaded in that session**, the effective switches with their
+source, the file list with sizes and hashes, and the capture health. The manifest is first written with `status: recording`
+and published as `finalized` only after the capture files are closed and hashed; `latest.json` is just a pointer.
+All of this runs on the capture thread or a background hashing thread. The hub reads no game memory: game speed and pause
+are only what was planned in the ini. Format and import rules: SH2-Perf `docs/FORMATS/CAPTURE_MANIFEST.md`.
