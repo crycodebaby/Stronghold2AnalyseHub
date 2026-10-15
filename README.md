@@ -98,11 +98,14 @@ out=SH2Perf_out                   ; output dir for logs/CSVs, relative to the pr
 ```
 
 Environment overrides: `SH2HUB_DISABLE=1` (hub off), `SH2HUB_OUT=<dir>` (output dir).
+`SH2HUB_AUTORECORD=<frames>`: record without key presses (starts after 30 frames, stops after about
+`<frames>` frames); used for automated tests.
 DXVK: rename DXVK's x32 `d3d9.dll` to `d3d9_dxvk.dll` and set `target=d3d9_dxvk.dll`.
 Back to vanilla: delete `d3d9.dll`, `Stronghold2AnalyseHub.dll`, `SH2Proxy.ini`.
 
 Output folder:
-- `SH2Proxy.log`: loader steps (config, real d3d9 path, hub ready / timeout / disabled), rewritten per start.
+- `SH2Proxy.log`: loader steps (config, real d3d9 path, hub ready / timeout / disabled, calling module of
+  every `Direct3DCreate9`), rewritten per start.
 - `Stronghold2AnalyseHub.log`: hub timeline (appended), including the game exe's sha256 and
   `known build: yes/no` (log only; Steam 1.5 is the known build).
 - Debug messages (`SH2Proxy:` / `SH2Hub:`) are also sent to `OutputDebugString` (DebugView).

@@ -99,9 +99,29 @@ namespace
             return 0;
         }
 
+        // Optional scripted recording without key presses (tests, automated runs):
+        // SH2HUB_AUTORECORD=<frames> starts after the first 30 frames and stops after
+        // about <frames> frames (the loop polls every 50 ms, so the count is approximate).
+        wchar_t autoValue[16]{};
+        uint64_t autoFrames = GetEnvironmentVariableW(L"SH2HUB_AUTORECORD", autoValue, 16)
+            ? _wcstoui64(autoValue, nullptr, 10) : 0;
+        uint64_t autoStart = 0;
+        if (autoFrames) Logger::Info("SH2HUB_AUTORECORD=%llu frames", autoFrames);
+
         // Simple control loop.
         // END unload, F9 recording on/off, F8 marker, F10 reset histogram.
         while (g_running.load()) {
+            if (autoFrames) {
+                const uint64_t frame = Metrics::Last().frameIndex;
+                if (!autoStart && frame >= 30 && !Metrics::Recording()) {
+                    Metrics::ToggleRecording();
+                    autoStart = frame;
+                }
+                else if (autoStart && frame >= autoStart + autoFrames) {
+                    if (Metrics::Recording()) Metrics::ToggleRecording();
+                    autoFrames = 0;
+                }
+            }
             if (GetAsyncKeyState(VK_END) & 1) {
                 Logger::Info("VK_END pressed: requesting unload.");
                 break;

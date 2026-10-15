@@ -22,6 +22,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
+#include <intrin.h>
 
 // Resolved export addresses of the real d3d9, indexed like kExports.
 // File scope (not in the namespace) so the naked stubs can address it from asm.
@@ -211,6 +212,14 @@ PROXY_STUB(16, PSGPSampleTexture)
 extern "C" void* WINAPI Proxy_Direct3DCreate9(UINT sdkVersion)
 {
     EnsureReal();
+    // Which module asks (the game exe and dxrenderer.dll both import it)?
+    HMODULE caller = nullptr;
+    wchar_t callerPath[MAX_PATH] = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            static_cast<LPCWSTR>(_ReturnAddress()), &caller))
+        GetModuleFileNameW(caller, callerPath, MAX_PATH);
+    const wchar_t* callerName = wcsrchr(callerPath, L'\\');
+    Log(L"Direct3DCreate9(SDK=%u) called from %s", sdkVersion, callerName ? callerName + 1 : callerPath);
     if (WaitForSingleObject(g_hubDone, kHubWaitMs + 5000) != WAIT_OBJECT_0)
         Log(L"Direct3DCreate9: hub start still pending, continuing without waiting");
     using Create_t = void*(WINAPI*)(UINT);
