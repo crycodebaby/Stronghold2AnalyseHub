@@ -36,6 +36,16 @@ add_library(Stronghold2AnalyseHub SHARED
     Stronghold2AnalyseHub/core/metrics.cpp
     Stronghold2AnalyseHub/hooks/d3d9_hooks.cpp)
 target_precompile_headers(Stronghold2AnalyseHub PRIVATE Stronghold2AnalyseHub/pch.h)
+
+# Commit baked into latest.json so captures name the exact hub build.
+# Evaluated at configure time: re-run cmake after committing.
+execute_process(COMMAND git describe --always --dirty --abbrev=12
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE HUB_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT HUB_GIT_COMMIT)
+    set(HUB_GIT_COMMIT "unknown")
+endif()
+target_compile_definitions(Stronghold2AnalyseHub PRIVATE HUB_GIT_COMMIT="${HUB_GIT_COMMIT}")
 target_link_libraries(Stronghold2AnalyseHub PRIVATE minhook imgui d3d9 psapi)
 
 add_executable(SH2Launcher launcher/launcher.cpp)

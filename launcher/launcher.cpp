@@ -1,8 +1,10 @@
 // SH2Launcher: start Stronghold 2 suspended, inject Stronghold2AnalyseHub.dll,
 // wait until its hooks are installed, then let the game run.
 //
-// Usage: SH2Launcher.exe <path\to\Stronghold2.exe> [path\to\Stronghold2AnalyseHub.dll]
+// Usage: SH2Launcher.exe <path\to\Stronghold2.exe> [path\to\Stronghold2AnalyseHub.dll] [--out <dir>]
 // Default DLL: next to SH2Launcher.exe.
+// Default output dir (log, CSVs, latest.json): <game folder>\SH2Perf_out.
+// Passed to the hub via the SH2HUB_OUT environment variable.
 //
 // Starting suspended guarantees the Direct3DCreate9 hook is in place before
 // the game creates its device (see SH2-Perf docs/DECISIONS.md D004).
@@ -29,15 +31,29 @@ namespace
 
 int wmain(int argc, wchar_t** argv)
 {
-    if (argc < 2) {
-        fprintf(stderr, "usage: SH2Launcher.exe <Stronghold2.exe> [Stronghold2AnalyseHub.dll]\n");
+    // Split "--out <dir>" from the positional arguments.
+    const wchar_t* positional[2]{};
+    int npos = 0;
+    const wchar_t* outArg = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (wcscmp(argv[i], L"--out") == 0 && i + 1 < argc) outArg = argv[++i];
+        else if (npos < 2) positional[npos++] = argv[i];
+    }
+    if (npos < 1) {
+        fprintf(stderr, "usage: SH2Launcher.exe <Stronghold2.exe> [Stronghold2AnalyseHub.dll] [--out <dir>]\n");
         return 2;
     }
 
-    wchar_t exe[MAX_PATH], dll[MAX_PATH];
-    GetFullPathNameW(argv[1], MAX_PATH, exe, nullptr);
-    if (argc >= 3) {
-        GetFullPathNameW(argv[2], MAX_PATH, dll, nullptr);
+    wchar_t exe[MAX_PATH], dll[MAX_PATH], out[MAX_PATH];
+    GetFullPathNameW(positional[0], MAX_PATH, exe, nullptr);
+    if (outArg) GetFullPathNameW(outArg, MAX_PATH, out, nullptr);
+    else swprintf_s(out, L"%s\\SH2Perf_out", DirOf(exe).c_str());
+    CreateDirectoryW(out, nullptr);
+    // Inherited by the game process; read by Logger::OutputDir().
+    SetEnvironmentVariableW(L"SH2HUB_OUT", out);
+
+    if (npos >= 2) {
+        GetFullPathNameW(positional[1], MAX_PATH, dll, nullptr);
     } else {
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(nullptr, self, MAX_PATH);
@@ -90,7 +106,8 @@ int wmain(int argc, wchar_t** argv)
     CloseHandle(ready);
 
     ResumeThread(pi.hThread);
-    printf("SH2Launcher: game PID %lu started with %ls\n", pi.dwProcessId, dll);
+    printf("SH2Launcher: game PID %lu started with %ls\nSH2Launcher: output -> %ls\n",
+        pi.dwProcessId, dll, out);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return 0;

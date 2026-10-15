@@ -73,18 +73,53 @@ namespace
         return static_cast<double>(ms.ullTotalVirtual - ms.ullAvailVirtual) / (1024.0 * 1024.0);
     }
 
-    std::wstring CaptureBasePath()
-    {
-        wchar_t exePath[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        if (wchar_t* p = wcsrchr(exePath, L'\\')) *(p + 1) = L'\0';
+    // Current recording, for latest.json.
+    std::string g_recordStem;      // e.g. SH2Perf_20261015_120000
+    std::string g_recordStartIso;
+    uint64_t    g_recordStartFrame = 0;
 
+    std::string LocalIso()
+    {
         SYSTEMTIME st;
         GetLocalTime(&st);
-        wchar_t stamp[64];
-        swprintf_s(stamp, L"SH2Perf_%04u%02u%02u_%02u%02u%02u", st.wYear, st.wMonth, st.wDay,
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02u", st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute, st.wSecond);
-        return std::wstring(exePath) + stamp;
+        return buf;
+    }
+
+    std::wstring CaptureBasePath()
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char stem[64];
+        snprintf(stem, sizeof(stem), "SH2Perf_%04u%02u%02u_%02u%02u%02u", st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute, st.wSecond);
+        g_recordStem = stem;
+        return Logger::OutputDir() + std::wstring(g_recordStem.begin(), g_recordStem.end());
+    }
+
+    // Describes the last finished recording so tools/ingest.py needs no guessing.
+    // File names only (no absolute paths) to keep personal paths out of data.
+    void WriteLatestJson()
+    {
+        FILE* f = nullptr;
+        _wfopen_s(&f, (Logger::OutputDir() + L"latest.json").c_str(), L"wb");
+        if (!f) return;
+        fprintf(f,
+            "{\n"
+            "  \"frames_csv\": \"%s_frames.csv\",\n"
+            "  \"threads_csv\": \"%s_threads.csv\",\n"
+            "  \"log\": \"Stronghold2AnalyseHub.log\",\n"
+            "  \"start\": \"%s\",\n"
+            "  \"stop\": \"%s\",\n"
+            "  \"frames\": %llu,\n"
+            "  \"markers\": %u,\n"
+            "  \"hub_commit\": \"%s\"\n"
+            "}\n",
+            g_recordStem.c_str(), g_recordStem.c_str(), g_recordStartIso.c_str(), LocalIso().c_str(),
+            g_frameIndex - g_recordStartFrame, g_markers.load(), HUB_GIT_COMMIT);
+        fclose(f);
     }
 
     void FlushFrameBuffer()
@@ -104,6 +139,7 @@ namespace
         if (g_threadCsv) fclose(g_threadCsv);
         g_frameCsv = g_threadCsv = nullptr;
         g_recording = false;
+        WriteLatestJson();
         Logger::Info("Recording stopped at frame %llu.", g_frameIndex);
     }
 
@@ -122,6 +158,8 @@ namespace
               "psconst_calls,psconst_vec4,va_used_mb,marker\n", g_frameCsv);
         fputs("t_s,tid,cpu_pct,is_render_thread\n", g_threadCsv);
         g_recordStartTick = Now();
+        g_recordStartIso = LocalIso();
+        g_recordStartFrame = g_frameIndex;
         g_lastFlushTick = g_recordStartTick;
         g_recording = true;
         Logger::Info("Recording started at frame %llu.", g_frameIndex);
