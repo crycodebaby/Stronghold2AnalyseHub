@@ -56,7 +56,8 @@ namespace GrannyObserver
     Totals LastTotals();
 
     // Capacities (fixed; overflow is counted and reported, never waited for).
-    constexpr uint32_t kInstanceSlots = 4096;
+    // Historical pointer identities, not live instances. Keep freed rows as evidence rather than silently evicting them.
+    constexpr uint32_t kInstanceSlots = 8192;
     constexpr uint32_t kDeformerSlots = 8192;
     constexpr uint32_t kPoseSlots = 4096;
     constexpr uint32_t kFrameRows = 8192;

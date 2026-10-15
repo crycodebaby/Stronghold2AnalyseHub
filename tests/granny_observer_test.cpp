@@ -231,13 +231,64 @@ int main()
     // 4. limits
     CHECK(GrannyObserver::Begin(g_dir + L"obs2"), "begin 2");
     g_frame = 0;
-    for (uint32_t i = 0; i < 6000; ++i) GrannySetModelClock(reinterpret_cast<void*>(static_cast<uintptr_t>(0x20000000u + i * 64u)), i);
+    const uint32_t limitCalls = GrannyObserver::kInstanceSlots + 256;
+    for (uint32_t i = 0; i < limitCalls; ++i) GrannySetModelClock(reinterpret_cast<void*>(static_cast<uintptr_t>(0x20000000u + i * 64u)), i);
     for (uint32_t f = 0; f < GrannyObserver::kFrameRows + 100; ++f) GrannyObserver::OnFrameEnd(f, 0);
     CHECK(GrannyObserver::End(), "end 2");
     const std::string meta2 = ReadFile(g_dir + L"obs2_granny.json");
-    CHECK(JsonValue(meta2, "instance_table_full") >= 6000 - static_cast<long long>(GrannyObserver::kInstanceSlots), "table full counted: %lld",
+    CHECK(JsonValue(meta2, "instance_table_full") >= 256, "table full counted: %lld",
           JsonValue(meta2, "instance_table_full"));
     CHECK(JsonValue(meta2, "frame_rows_dropped") == 100 && JsonValue(meta2, "frame_rows_written") == GrannyObserver::kFrameRows, "frame rows full counted");
+    CHECK(meta2.find("\"owner_detail_complete\": false") != std::string::npos, "overflow detail must not be complete");
+
+    // G1 regression: many persistent identities and allocator-aligned pointers. No game memory is dereferenced.
+    CHECK(GrannyObserver::Begin(g_dir + L"obs_capacity"), "begin capacity regression");
+    g_frame = 0; g_marker = 1;
+    const uint32_t capacityBefore = log.calls[0];
+    for (uint32_t i = 0; i < 6000; ++i)
+        GrannySetModelClock(reinterpret_cast<void*>(static_cast<uintptr_t>(0x30000000u + i * 64u)), Bits(1.0f));
+    GrannyObserver::OnFrameEnd(0, 1);
+    CHECK(GrannyObserver::End(), "end capacity regression");
+    const std::string capacityMeta = ReadFile(g_dir + L"obs_capacity_granny.json");
+    CHECK(JsonValue(capacityMeta, "instance_table_full") == 0, "6000 keys must be retained without losses");
+    CHECK(JsonValue(capacityMeta, "instances_used") == 6000, "occupancy must be measured");
+    CHECK(capacityMeta.find("\"owner_detail_complete\": true") != std::string::npos, "lossless detail is complete");
+    CHECK(JsonValue(capacityMeta, "allocated_bytes") > 0 && JsonValue(capacityMeta, "allocated_bytes") <= 12 * 1024 * 1024,
+          "bounded 12 MiB budget");
+    CHECK(log.calls[0] - capacityBefore == 6000, "capacity failures never alter forwarding");
+
+    // All these pointers collided in the old low-bit hash, even in an almost empty table.
+    CHECK(GrannyObserver::Begin(g_dir + L"obs_collision"), "begin collision regression");
+    for (uint32_t i = 0; i < 128; ++i)
+        GrannySetModelClock(reinterpret_cast<void*>(static_cast<uintptr_t>(0x40000000u + i * 0x10000u)), Bits(2.0f));
+    GrannyObserver::OnFrameEnd(0, 1);
+    CHECK(GrannyObserver::End(), "end collision regression");
+    CHECK(JsonValue(ReadFile(g_dir + L"obs_collision_granny.json"), "instance_table_full") == 0,
+          "aligned keys must not exhaust a short probe chain");
+
+    // A recycled address must not inherit equal-input comparisons from a prior lifetime.
+    CHECK(GrannyObserver::Begin(g_dir + L"obs_reuse"), "begin lifetime regression");
+    for (int generation = 0; generation < 2; ++generation) {
+        g_frame = generation;
+        GrannySetModelClock(g_inst[0], Bits(3.0f));
+        if (generation) {
+            void* oldComposite = GrannyGetWorldPoseComposite4x4Array(g_world[0]);
+            GrannyDeformVertices(g_def[0], g_idx, static_cast<const float*>(oldComposite), 100, g_src, g_dst);
+        }
+        GrannySampleModelAnimationsAccelerated(g_inst[0], 20, g_off[0], g_local, g_world[0]);
+        void* newComposite = GrannyGetWorldPoseComposite4x4Array(g_world[0]);
+        GrannyDeformVertices(g_def[0], g_idx, static_cast<const float*>(newComposite), 100, g_src, g_dst);
+        if (!generation) GrannyFreeModelInstance(g_inst[0]);
+        GrannyObserver::OnFrameEnd(generation, 1);
+    }
+    CHECK(GrannyObserver::End(), "end lifetime regression");
+    const auto reused = ReadCsv(g_dir + L"obs_reuse_granny_instances.csv", "marker_slot");
+    CHECK(N(reused, i0 + "|1", "clock_noprev") == 2 && N(reused, i0 + "|1", "sample_noprev") == 2,
+          "free/reuse starts fresh comparisons");
+    CHECK(N(reused, i0 + "|1", "all_observed_same") == 0, "no equality across lifetimes");
+    const auto reuseDefs = ReadCsv(g_dir + L"obs_reuse_granny_deformers.csv", "marker_slot");
+    CHECK(N(reuseDefs, Id(g_def[0]) + "|1", "link_none") == 1 &&
+          N(reuseDefs, Id(g_def[0]) + "|1", "link_frame") == 2, "old lifetime pose cannot link to reused instance");
 
     // 5. End while the owner keeps calling, then Uninstall
     const uint32_t c0 = log.calls[0];

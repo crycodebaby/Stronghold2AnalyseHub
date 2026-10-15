@@ -20,7 +20,7 @@
 namespace
 {
     using namespace GrannyObserver;
-    constexpr uint32_t kProbe = 32;
+    constexpr uint32_t kProbe = 128;
     const char* const kFnNames[kFnCount] = {
         "GrannySetModelClock", "GrannySampleModelAnimationsAccelerated", "GrannyDeformVertices",
         "GrannyGetWorldPoseComposite4x4Array", "GrannyFreeModelInstance", "GrannyFreeMeshDeformer" };
@@ -45,6 +45,7 @@ namespace
         uintptr_t local, world;
         uint32_t offset[16];                                   // raw bits of the last offset matrix
         uint32_t frees, usedAfterFree, siteClock, siteSample;
+        uint32_t generation;
         InstM m[kMarkerSlots];
     };
     struct DefM
@@ -67,7 +68,7 @@ namespace
     struct Pose          // key = world pose
     {
         uintptr_t key, composite, sampledInst;
-        uint32_t compositeFrame1, sampledFrame1, ambiguousFrame1;
+        uint32_t compositeFrame1, sampledFrame1, ambiguousFrame1, sampledGeneration;
     };
     struct Comp          // key = composite array pointer returned for a world pose
     {
@@ -84,6 +85,10 @@ namespace
         uint32_t linkFrame, linkOlder, linkNone, linkAmbiguous;
         uint32_t drops;
     };
+    struct TableUsage
+    {
+        uint32_t used, peakProbe, probeFailures, capacityFailures, invalidKeys;
+    };
     struct Tables
     {
         Inst inst[kInstanceSlots];
@@ -94,10 +99,12 @@ namespace
         FrameRow cur;
         uint32_t rowCount, framesDropped;
         uint32_t dropsInst, dropsDef, dropsPose, dropsComp;
+        TableUsage instUsage, defUsage, poseUsage, compUsage;
         uint64_t calls[kFnCount];
         uint32_t offsetFaults, compConflicts;
         bool first;
     };
+    static_assert(sizeof(Tables) <= 12 * 1024 * 1024, "observer must fit the 12 MiB allocation budget");
 
     struct Slot { void** iat = nullptr; void* orig = nullptr; void* thunk = nullptr; bool patched = false; uint32_t iatRva = 0, origRva = 0; };
 
@@ -143,22 +150,33 @@ namespace
     }
     void Leave() { g_busy.store(0, std::memory_order_release); }
 
-    uint32_t Hash(uintptr_t p) { return static_cast<uint32_t>(p >> 3) * 2654435761u; }
+    uint32_t Hash(uintptr_t p)
+    {
+        // Mix high address bits too: allocator-aligned pointers collided in the former low-bit hash.
+        uint32_t x = static_cast<uint32_t>(p);
+        x ^= x >> 16; x *= 0x7feb352du;
+        x ^= x >> 15; x *= 0x846ca68bu;
+        return x ^ (x >> 16);
+    }
 
     template <typename T>
-    T* Find(T* table, uint32_t cap, uintptr_t key, uint32_t& drops)
+    T* Find(T* table, uint32_t cap, uintptr_t key, uint32_t& drops, TableUsage& usage)
     {
+        if (!key) { ++drops; ++usage.invalidKeys; return nullptr; }
         uint32_t i = Hash(key) & (cap - 1);
         for (uint32_t n = 0; n < kProbe; ++n, i = (i + 1) & (cap - 1)) {
+            if (n + 1 > usage.peakProbe) usage.peakProbe = n + 1;
             if (table[i].key == key) return &table[i];
-            if (table[i].key == 0) { table[i].key = key; return &table[i]; }
+            if (table[i].key == 0) { table[i].key = key; ++usage.used; return &table[i]; }
         }
         ++drops;
+        if (usage.used == cap) ++usage.capacityFailures; else ++usage.probeFailures;
         return nullptr;
     }
     template <typename T>
     T* Lookup(T* table, uint32_t cap, uintptr_t key)
     {
+        if (!key) return nullptr;
         uint32_t i = Hash(key) & (cap - 1);
         for (uint32_t n = 0; n < kProbe; ++n, i = (i + 1) & (cap - 1)) {
             if (table[i].key == key) return &table[i];
@@ -190,7 +208,7 @@ namespace
     {
         Tables& t = *g_t;
         ++t.calls[kClock]; ++t.cur.calls[kClock];
-        Inst* e = Find(t.inst, kInstanceSlots, reinterpret_cast<uintptr_t>(inst), t.dropsInst);
+        Inst* e = Find(t.inst, kInstanceSlots, reinterpret_cast<uintptr_t>(inst), t.dropsInst, t.instUsage);
         if (!e) { ++t.cur.drops; return; }
         const uint32_t f1 = static_cast<uint32_t>(g_frameFn()) + 1;
         InstM& m = e->m[Slot5(g_markerFn())];
@@ -220,15 +238,17 @@ namespace
         ++t.calls[kSample]; ++t.cur.calls[kSample];
         const uint32_t f1 = static_cast<uint32_t>(g_frameFn()) + 1;
         const uintptr_t key = reinterpret_cast<uintptr_t>(inst), w = reinterpret_cast<uintptr_t>(world);
-        if (Pose* p = Find(t.pose, kPoseSlots, w, t.dropsPose)) {
-            if (p->sampledFrame1 == f1 && p->sampledInst != key) p->ambiguousFrame1 = f1;
-            p->sampledInst = key;
-            p->sampledFrame1 = f1;
-        }
-        Inst* e = Find(t.inst, kInstanceSlots, key, t.dropsInst);
+        Inst* e = Find(t.inst, kInstanceSlots, key, t.dropsInst, t.instUsage);
         if (!e) { ++t.cur.drops; return; }
         InstM& m = e->m[Slot5(g_markerFn())];
         NoteFreedInst(e);
+        if (Pose* p = Find(t.pose, kPoseSlots, w, t.dropsPose, t.poseUsage)) {
+            if (p->sampledFrame1 == f1 && (p->sampledInst != key || p->sampledGeneration != e->generation))
+                p->ambiguousFrame1 = f1;
+            p->sampledInst = key;
+            p->sampledFrame1 = f1;
+            p->sampledGeneration = e->generation;
+        }
         Touch(e->firstFrame1, e->lastFrame1, f1);
         const uint32_t site = Site(ret);
         if (!e->siteSample) e->siteSample = site; else if (e->siteSample != site) e->multiSiteSample = 1;
@@ -269,7 +289,7 @@ namespace
     {
         Tables& t = *g_t;
         ++t.calls[kDeform]; ++t.cur.calls[kDeform];
-        Def* e = Find(t.def, kDeformerSlots, reinterpret_cast<uintptr_t>(deformer), t.dropsDef);
+        Def* e = Find(t.def, kDeformerSlots, reinterpret_cast<uintptr_t>(deformer), t.dropsDef, t.defUsage);
         if (!e) { ++t.cur.drops; return; }
         const uint32_t f1 = static_cast<uint32_t>(g_frameFn()) + 1;
         DefM& m = e->m[Slot5(g_markerFn())];
@@ -300,7 +320,10 @@ namespace
         uintptr_t inst = 0;
         const Comp* c = Lookup(t.comp, kPoseSlots, mat);
         const Pose* p = c ? Lookup(t.pose, kPoseSlots, c->world) : nullptr;
-        if (!p || !p->sampledFrame1) { ++m.linkNone; ++t.cur.linkNone; }
+        const Inst* linked = p ? Lookup(t.inst, kInstanceSlots, p->sampledInst) : nullptr;
+        if (!p || !p->sampledFrame1 || !linked || linked->freed || linked->generation != p->sampledGeneration) {
+            ++m.linkNone; ++t.cur.linkNone;
+        }
         else if (p->ambiguousFrame1 == p->sampledFrame1) { ++m.linkAmbiguous; ++t.cur.linkAmbiguous; }
         else {
             inst = p->sampledInst;
@@ -319,9 +342,9 @@ namespace
         ++t.calls[kComposite]; ++t.cur.calls[kComposite];
         const uint32_t f1 = static_cast<uint32_t>(g_frameFn()) + 1;
         const uintptr_t w = reinterpret_cast<uintptr_t>(world), r = reinterpret_cast<uintptr_t>(result);
-        if (Pose* p = Find(t.pose, kPoseSlots, w, t.dropsPose)) { p->composite = r; p->compositeFrame1 = f1; }
+        if (Pose* p = Find(t.pose, kPoseSlots, w, t.dropsPose, t.poseUsage)) { p->composite = r; p->compositeFrame1 = f1; }
         if (!r) return;
-        if (Comp* c = Find(t.comp, kPoseSlots, r, t.dropsComp)) {
+        if (Comp* c = Find(t.comp, kPoseSlots, r, t.dropsComp, t.compUsage)) {
             if (c->world && c->world != w) { ++c->conflicts; ++t.compConflicts; }
             c->world = w;
             c->frame1 = f1;
@@ -333,8 +356,16 @@ namespace
         Tables& t = *g_t;
         ++t.calls[fn]; ++t.cur.calls[fn];
         const uintptr_t key = reinterpret_cast<uintptr_t>(obj);
-        if (fn == kFreeInstance) { if (Inst* e = Lookup(t.inst, kInstanceSlots, key)) { ++e->frees; e->freed = 1; } }
-        else if (Def* e = Lookup(t.def, kDeformerSlots, key)) { ++e->frees; e->freed = 1; }
+        if (fn == kFreeInstance) {
+            if (Inst* e = Lookup(t.inst, kInstanceSlots, key)) {
+                ++e->frees; e->freed = 1; ++e->generation;
+                e->haveClock = e->haveSample = e->clockSameThisCall = e->offsetValid = 0;
+                e->clockFrame1 = e->sampleFrame1 = 0;
+            }
+        }
+        else if (Def* e = Lookup(t.def, kDeformerSlots, key)) {
+            ++e->frees; e->freed = 1; e->have = 0; e->linkedInst = 0;
+        }
     }
 
     // ---- thunks: same convention and arguments as the import; the original is called exactly once ----
@@ -381,7 +412,7 @@ namespace
         FILE* f = nullptr;
         // meta
         if (_wfopen_s(&f, (g_base + L"_granny.json").c_str(), L"wb") || !f) return false;
-        fprintf(f, "{\n  \"schema\": \"sh2perf.granny-observer\",\n  \"version\": 1,\n  \"hub\": \"%s\",\n", HUB_GIT_COMMIT);
+        fprintf(f, "{\n  \"schema\": \"sh2perf.granny-observer\",\n  \"version\": 2,\n  \"hub\": \"%s\",\n", HUB_GIT_COMMIT);
         fprintf(f, "  \"owner_tid\": %u,\n  \"slots\": [", g_owner.load());
         for (int i = 0; i < kFnCount; ++i)
             fprintf(f, "%s\n    {\"fn\": \"%s\", \"import\": \"%s\", \"iat_rva\": \"0x%08X\", \"orig_rva_in_granny2\": \"0x%08X\", \"patched\": %s}",
@@ -393,6 +424,17 @@ namespace
         fprintf(f, "},\n  \"first_foreign_tid\": %u,\n", tot.firstForeignTid);
         fprintf(f, "  \"capacity\": {\"instances\": %u, \"deformers\": %u, \"poses\": %u, \"frame_rows\": %u, \"probe\": %u},\n",
             kInstanceSlots, kDeformerSlots, kPoseSlots, kFrameRows, kProbe);
+        fprintf(f, "  \"allocated_bytes\": %zu,\n  \"table_usage\": {", sizeof(Tables));
+        const TableUsage* usage[] = { &t.instUsage, &t.defUsage, &t.poseUsage, &t.compUsage };
+        const char* names[] = { "instances", "deformers", "poses", "composites" };
+        for (int i = 0; i < 4; ++i) {
+            const TableUsage& u = *usage[i];
+            fprintf(f, "%s\"%s_used\": %u, \"%s_peak_probe\": %u, \"%s_probe_failures\": %u, \"%s_capacity_failures\": %u, \"%s_invalid_keys\": %u",
+                i ? ", " : "", names[i], u.used, names[i], u.peakProbe, names[i], u.probeFailures,
+                names[i], u.capacityFailures, names[i], u.invalidKeys);
+        }
+        const bool complete = tot.tableDrops == 0 && t.framesDropped == 0 && t.offsetFaults == 0;
+        fprintf(f, "},\n  \"owner_detail_complete\": %s,\n", complete ? "true" : "false");
         fprintf(f, "  \"losses\": {\"instance_table_full\": %u, \"deformer_table_full\": %u, \"pose_table_full\": %u, \"composite_table_full\": %u, "
             "\"frame_rows_dropped\": %u, \"offset_read_faults\": %u},\n",
             t.dropsInst, t.dropsDef, t.dropsPose, t.dropsComp, t.framesDropped, t.offsetFaults);
