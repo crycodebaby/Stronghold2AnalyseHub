@@ -42,8 +42,11 @@ namespace Capture
 
     // `markerFn` returns the current F8 marker number. Starts the capture thread.
     void Init(uint32_t (*markerFn)());
-    // Stops the thread; an open recording is finished first.
-    void Shutdown();
+    // Asks the capture thread to finish (an open recording is finalized first) and waits up to `timeoutMs` for it to END.
+    // true = the thread has ended. false = it is still running (blocked in a file operation, for example): nothing it
+    // uses is released, the caller must not unload the DLL and may call this again later.
+    bool Shutdown(DWORD timeoutMs = 5000);
+    bool ThreadRunning();
 
     // --- render thread ---
     uint32_t ActiveGen();                          // 0 = not recording
@@ -58,6 +61,9 @@ namespace Capture
 
     // Test hooks (tests/capture_test.cpp).
     void Test_StallWriter(bool stall);
+    void Test_BlockWrites(bool block);             // the writer sticks inside its next file write
+    bool Test_ThreadAlive();                       // the capture thread function has not returned
+    bool Test_WakeHandleValid();                   // the wake event handle is still open
     void Test_FailNextWrites(bool fail);
     void Test_FailManifest(bool fail);             // next manifest writes fail
     void Test_AbandonRecording();                  // behave like a killed process: no final manifest

@@ -25,7 +25,13 @@ namespace
     WNDPROC              g_prevWndProc = nullptr;
 
     // ImGui lifecycle flag
-    bool                 g_imguiReady = false;
+    std::atomic<bool>    g_imguiReady{ false };
+    // Deactivation protocol (SH2-Perf D013; END deactivates, the DLL stays loaded): Uninstall() sets g_unloading; from then on the hooks neither start nor use ImGui, and the
+    // render thread - the only thread that draws with it - tears it down in EndScene. g_imguiUsers counts the other threads
+    // (window procedure, device reset) that are inside ImGui code right now.
+    std::atomic<bool>    g_unloading{ false };
+    std::atomic<int>     g_imguiUsers{ 0 };
+    struct ImGuiUse { ImGuiUse() { ++g_imguiUsers; } ~ImGuiUse() { --g_imguiUsers; } };
 
     // Function typedefs
     using Direct3DCreate9_t = IDirect3D9 * (WINAPI*)(UINT);
@@ -131,26 +137,31 @@ namespace
     // we avoid feeding it back to the game.
     LRESULT CALLBACK WndProc_Hook(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
-        if (g_imguiReady) {
-            if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-                return TRUE;
+        {
+            ImGuiUse use;
+            if (!g_unloading.load() && g_imguiReady) {
+                if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+                    return TRUE;
 
-            const ImGuiIO& io = ImGui::GetIO();
-            if (io.WantCaptureMouse || io.WantCaptureKeyboard)
-                return DefWindowProcW(hWnd, msg, wParam, lParam);
+                const ImGuiIO& io = ImGui::GetIO();
+                if (io.WantCaptureMouse || io.WantCaptureKeyboard)
+                    return DefWindowProcW(hWnd, msg, wParam, lParam);
+            }
         }
         return CallWindowProcW(g_prevWndProc, hWnd, msg, wParam, lParam);
     }
 
     HRESULT STDMETHODCALLTYPE Reset_Hook(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* pp)
     {
-        if (g_imguiReady) {
+        ImGuiUse use;
+        const bool overlay = !g_unloading.load() && g_imguiReady;
+        if (overlay) {
             ImGui_ImplDX9_InvalidateDeviceObjects();
         }
 
         const HRESULT hr = s_Reset_Orig(device, pp);
 
-        if (SUCCEEDED(hr) && g_imguiReady) {
+        if (SUCCEEDED(hr) && overlay && !g_unloading.load() && g_imguiReady) {
             ImGui_ImplDX9_CreateDeviceObjects();
             Logger::Info("Device reset handled.");
         }
@@ -202,12 +213,17 @@ namespace
         if (cs.openFailed) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "LAST START FAILED: files could not be opened (see log)");
         if (cs.writeFailed || cs.writeErrors) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "WRITE ERROR: recording incomplete (see log)");
         if (cs.dropped) ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "frames dropped: capture ring was full");
-        ImGui::TextUnformatted("F9 record on/off   F8 marker   F10 reset histogram   END unload");
+        ImGui::TextUnformatted("F9 record on/off   F8 marker   F10 reset histogram   END deactivate hub");
     }
 
     HRESULT STDMETHODCALLTYPE EndScene_Hook(IDirect3DDevice9* device)
     {
         if (!g_device) g_device = device;
+        if (g_unloading.load()) {
+            // Deactivation in progress: no measurement, no overlay. This thread is the one that draws, so it tears ImGui down.
+            if (g_imguiReady && g_imguiUsers.load() == 0) ImGui_Destroy();
+            return s_EndScene_Orig(device);
+        }
         Metrics::OnEndSceneEnter();
         ImGui_CreateIfReady();
 
@@ -476,18 +492,27 @@ bool D3D9Hooks::Install()
 
 void D3D9Hooks::Uninstall()
 {
-    if (g_hwnd && g_prevWndProc) {
-        SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_prevWndProc));
-        g_prevWndProc = nullptr;
-    }
+    static std::atomic<bool> done{ false };
+    if (done.exchange(true)) return;
+    g_unloading.store(true);                         // from here on the hooks leave ImGui alone
 
-    ImGui_Destroy();
+    // Put the game's window procedure back. g_prevWndProc stays set: a thread still inside WndProc_Hook calls it.
+    if (g_hwnd && g_prevWndProc)
+        SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_prevWndProc));
+
+    // ImGui may only be destroyed by the render thread (EndScene hook). Wait for it; if it never comes back to EndScene,
+    // ImGui stays allocated - destroying it from this thread while the render thread may use it is what crashed the game.
+    const DWORD t0 = GetTickCount();
+    while (g_imguiReady && GetTickCount() - t0 < 2000) Sleep(10);
+    if (g_imguiReady)
+        Logger::Warn("ImGui left allocated: the render thread did not reach EndScene within 2 s; it is not destroyed from this thread.");
 
     MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
+    // MH_Uninitialize() is deliberately not called: it frees the trampolines, and a thread that is still inside one of our hooks
+    // returns through them. For the same reason the DLL stays loaded after hooks were installed (dllmain).
     Metrics::Shutdown();
 
-    Logger::Info("All hooks removed.");
+    Logger::Info("All hooks disabled (trampolines and module stay resident).");
 }
 
 HWND D3D9Hooks::GetGameHwnd() { return g_hwnd; }

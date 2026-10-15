@@ -4,6 +4,7 @@
 #include "capture.h"
 #include "config.h"
 #include "provenance.h"
+#include "lifecycle.h"
 #include "sampler.h"
 #include "../hooks/d3d9_hooks.h"
 
@@ -17,6 +18,9 @@ namespace
     HMODULE           g_module = nullptr;
     HANDLE            g_thread = nullptr;
     std::atomic<bool> g_running{ true };
+    // Hooks patch the game's code and threads may still be returning through our trampolines: once Install() ran, the DLL
+    // is never unmapped (SH2-Perf D012/D013): END deactivates the hub, it does not unload it. Without hooks the DLL may unload.
+    std::atomic<bool> g_keepResident{ false };
 
     // Game builds the hub was checked against (SH2-Perf docs/FINDINGS.md F001, F058).
     struct KnownBuild { const char* sha256; const char* name; };
@@ -55,6 +59,29 @@ namespace
         }
     }
 
+    // The DLL may only go once none of our threads can still run code from it. Blocks (without killing anything) until the
+    // capture writer, the sampler and the hashing thread have really ended; a blocked one keeps the hub loaded and logged.
+    void WaitForBackgroundThreads()
+    {
+        const DWORD t0 = GetTickCount();
+        DWORD lastLog = t0;
+        bool deferred = false;
+        for (;;) {
+            const Lifecycle::Result r = Lifecycle::StopBackground(deferred ? 1000 : 5000);
+            if (r.All()) break;
+            if (!deferred) {
+                deferred = true;
+                Logger::Error("Deactivation DEFERRED: still running: %s. Nothing is terminated; the deactivation "
+                    "continues by itself when they end.", Lifecycle::Describe(r).c_str());
+            }
+            else if (GetTickCount() - lastLog > 30000) {
+                lastLog = GetTickCount();
+                Logger::Warn("Still waiting for: %s (%lu s since the deactivation request).", Lifecycle::Describe(r).c_str(), (GetTickCount() - t0) / 1000);
+            }
+        }
+        if (deferred) Logger::Info("Background threads ended after %lu ms; continuing the deactivation.", GetTickCount() - t0);
+    }
+
     DWORD RunHub()
     {
         // Visible in DebugView even if the log file cannot be written.
@@ -66,6 +93,7 @@ namespace
         Config::Init();                                   // measurement switches (config.h)
         Provenance::Start();                              // background SHA-256 of exe/DLLs for the manifests (provenance.h)
         Capture::Init([] { return Metrics::Markers(); }); // capture thread: files, polling (capture.h)
+        g_keepResident.store(true);
         const bool installed = D3D9Hooks::Install();
         Sampler::Init();
 
@@ -76,6 +104,7 @@ namespace
 
         if (!installed) {
             Logger::Error("Hook installation failed; exiting.");
+            WaitForBackgroundThreads();
             Logger::Shutdown();
             return 0;
         }
@@ -95,7 +124,7 @@ namespace
         bool warnedNoFrames = false;
 
         // Simple control loop.
-        // END unload, F9 recording on/off, F8 marker, F10 reset histogram.
+        // END deactivate the hub, F9 recording on/off, F8 marker, F10 reset histogram.
         while (g_running.load()) {
             if (autoFrames) {
                 const uint64_t frame = Metrics::FrameIndex();
@@ -109,7 +138,7 @@ namespace
                 }
             }
             if (GetAsyncKeyState(VK_END) & 1) {
-                Logger::Info("VK_END pressed: requesting unload.");
+                Logger::Info("VK_END pressed: deactivating the hub (hooks off, threads stopped; the DLL stays loaded until the game exits).");
                 break;
             }
             if (GetAsyncKeyState(VK_F9) & 1) Metrics::ToggleRecording();
@@ -123,10 +152,13 @@ namespace
             Sleep(50);
         }
 
-        Metrics::Shutdown();
-        Sampler::Shutdown();
+        WaitForBackgroundThreads();                       // before hooks and logger go: a stuck thread may still log
         D3D9Hooks::Uninstall();
-        Logger::Info("DLL detaching.");
+        if (g_keepResident.load())
+            Logger::Info("Hub deactivated: hooks disabled, background threads ended. The DLL and its trampolines stay loaded until the game exits; "
+                "activating the hub again or using another hub build needs a game restart.");
+        else
+            Logger::Info("DLL detaching.");
         Logger::Shutdown();
         return 0;
     }
@@ -150,6 +182,8 @@ namespace
             Logger::Error("Unknown exception in hub thread.");
             SignalReady();
         }
+        WaitForBackgroundThreads();                       // also after an exception: never unload under a running thread
+        if (g_keepResident.load()) return 0;              // hooks were installed: the module stays mapped, only this thread ends
         FreeLibraryAndExitThread(g_module, 0);
         return 0;
     }

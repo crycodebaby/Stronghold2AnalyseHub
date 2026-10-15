@@ -13,6 +13,9 @@ namespace
     Provenance::Software g_software;
     std::atomic<bool> g_done{ false };
     std::atomic<bool> g_started{ false };
+    std::atomic<bool> g_cancel{ false };
+    std::atomic<bool> g_alive{ false };
+    std::atomic<int>  g_stall{ 0 };
     HANDLE g_thread = nullptr;
     std::string g_sessionId;
     std::mutex g_sessionMutex;
@@ -33,11 +36,13 @@ namespace
 
     void AddFile(const char* role, const std::wstring& path)
     {
+        if (g_cancel.load()) return;
         if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return;
         Provenance::FileId id;
         id.role = role;
         id.name = BaseName(path);
-        id.sha256 = Provenance::Sha256File(path.c_str(), &id.size);
+        id.sha256 = Provenance::Sha256File(path.c_str(), &id.size, &g_cancel);
+        if (g_cancel.load()) return;                     // stopped: do not record a half-measured file
         if (id.sha256.empty())
             Logger::Warn("Provenance: could not hash %s (%lu); identity of this file stays unknown.", id.name.c_str(), GetLastError());
         g_software.files.push_back(std::move(id));
@@ -45,7 +50,13 @@ namespace
 
     DWORD WINAPI HashMain(LPVOID)
     {
+        g_alive.store(true);
         try {
+            for (;;) {                                   // test hook: hashing that is slow or stuck
+                const int mode = g_stall.load();
+                if (mode == 0 || (mode == 2 && g_cancel.load())) break;
+                Sleep(5);
+            }
             HMODULE self = nullptr;
             GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 reinterpret_cast<LPCWSTR>(&Provenance::Start), &self);
@@ -77,6 +88,7 @@ namespace
             Logger::Error("Provenance: unknown exception while hashing.");
         }
         g_done.store(true, std::memory_order_release);
+        g_alive.store(false);
         return 0;
     }
 }
@@ -89,6 +101,32 @@ void Provenance::Start()
         Logger::Error("Provenance: could not start the hashing thread (%lu); software identity unavailable.", GetLastError());
         g_done.store(true);
     }
+}
+
+bool Provenance::Shutdown(DWORD timeoutMs)
+{
+    if (!g_thread) return true;
+    g_cancel.store(true);
+    if (WaitForSingleObject(g_thread, timeoutMs) != WAIT_OBJECT_0) {
+        Logger::Error("Provenance: the hashing thread is still running after %lu ms; the hub stays loaded until it ends.", timeoutMs);
+        return false;                                  // the handle stays open: it is the only proof that the thread ended
+    }
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+    return true;
+}
+
+bool Provenance::ThreadRunning() { return g_thread != nullptr && g_alive.load(); }
+bool Provenance::Cancelled() { return g_cancel.load(); }
+
+void Provenance::Test_StallHash(int mode) { g_stall.store(mode); }
+void Provenance::Test_Reset()
+{
+    if (g_thread) return;                         // only after the thread has ended
+    g_software = Software{};
+    g_done.store(false);
+    g_cancel.store(false);
+    g_started.store(false);
 }
 
 bool Provenance::Wait(DWORD timeoutMs)
@@ -124,7 +162,7 @@ std::wstring Provenance::HubDir()
     return ModuleDir(self);
 }
 
-std::string Provenance::Sha256File(const wchar_t* path, uint64_t* sizeOut)
+std::string Provenance::Sha256File(const wchar_t* path, uint64_t* sizeOut, const std::atomic<bool>* cancel)
 {
     if (sizeOut) *sizeOut = 0;
     std::string hex;
@@ -141,6 +179,7 @@ std::string Provenance::Sha256File(const wchar_t* path, uint64_t* sizeOut)
         bool ok = true;
         uint64_t total = 0;
         for (;;) {
+            if (cancel && cancel->load()) { ok = false; break; }
             if (!ReadFile(file, buf.data(), static_cast<DWORD>(buf.size()), &got, nullptr)) { ok = false; break; }
             if (!got) break;
             if (BCryptHashData(hash, buf.data(), got, 0) != 0) { ok = false; break; }

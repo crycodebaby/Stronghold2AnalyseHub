@@ -19,7 +19,10 @@ namespace Sampler
 
     // Reads the configuration and starts the sampler thread if the mode is not Off.
     void Init();
-    void Shutdown();
+    // Stops the sampler thread; true = it has ended. false = still running after `timeoutMs`: its handle stays open and the
+    // DLL must not be unloaded; call again later.
+    bool Shutdown(DWORD timeoutMs = 2000);
+    bool ThreadRunning();
     Mode GetMode();
 
     // Thread to sample (cheap; called once per frame by the render thread).
@@ -33,4 +36,8 @@ namespace Sampler
     // Statistics of the last finished recording (also logged).
     struct Stats { uint64_t samples = 0, failed = 0, dropped = 0; double meanSuspendUs = 0, maxSuspendUs = 0; };
     Stats LastStats();
+
+    // Test hooks (tests/lifecycle_test.cpp).
+    void Test_BlockThread(bool block);
+    bool Test_ThreadAlive();
 }

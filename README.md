@@ -34,7 +34,7 @@ This is intentionally modest and readable—meant to be a solid base for deeper 
    - Per-frame overlay rendering
 
 **Hotkeys**
-- `END` — request unload (removes hooks cleanly, shuts down ImGui, flushes logs)
+- `END` — deactivate the hub (disables the hooks, ends ImGui and the background threads, finalizes an open recording). The DLL and its trampolines stay loaded until the game exits; activating the hub again or using another hub build needs a game restart
 
 ---
 
@@ -68,7 +68,7 @@ Read-only telemetry; nothing changes how the game renders or simulates.
 - Per-thread CPU usage once per second (which thread is busy, which one renders).
 - Loaded module list written to the log once (which DLL copies the loader picked).
 
-Hotkeys: `F9` record on/off, `F8` marker, `F10` reset histogram, `END` unload.
+Hotkeys: `F9` record on/off, `F8` marker, `F10` reset histogram, `END` deactivate the hub (not an unload).
 Recording writes `SH2Perf_<timestamp>_frames.csv` (and `_threads.csv` with `poll`, `_samples.csv` with the sampler)
 plus `latest.json` into the output dir (`SH2HUB_OUT`, `out=` in `SH2Proxy.ini`, default `SH2Perf_out`).
 
@@ -175,3 +175,8 @@ source, the file list with sizes and hashes, and the capture health. The manifes
 and published as `finalized` only after the capture files are closed and hashed; `latest.json` is just a pointer.
 All of this runs on the capture thread or a background hashing thread. The hub reads no game memory: game speed and pause
 are only what was planned in the ini. Format and import rules: SH2-Perf `docs/FORMATS/CAPTURE_MANIFEST.md`.
+
+### Deactivation (END key) and game exit
+`END` deactivates the hub; it does not unload it. The capture writer, the sampler and the provenance hashing thread are asked to stop and must really end first; a blocked one is logged (`Deactivation DEFERRED`) and nothing is terminated. Then the hooks are disabled and made inert, ImGui is torn down by the render thread, and the DLL with its trampolines stays loaded until the game exits (log: `Hub deactivated …`). Activating the hub again or using another hub build needs a game restart. An open recording is finalized by the deactivation.
+
+A **normal exit of the game does not finalize** a running recording (the process ends the hub's threads; verified in the stand-in): the manifest stays at `status: recording`, like after a hard kill, and the importer treats it as interrupted. Stop the recording with `F9` and wait for `Recording stopped … manifest published` in the log before quitting the game. Details: SH2-Perf D013.

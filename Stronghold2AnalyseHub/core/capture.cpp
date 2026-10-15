@@ -40,7 +40,7 @@ namespace
 
     std::atomic<bool> g_toggle{ false };
     std::atomic<bool> g_running{ false };
-    HANDLE g_wake = nullptr;
+    HANDLE g_wake = nullptr;                      // never closed while the process lives: the capture thread and RequestToggle may still use it
     HANDLE g_thread = nullptr;
     uint32_t (*g_markerFn)() = nullptr;
 
@@ -56,6 +56,8 @@ namespace
     std::atomic<bool> g_manifestFailed{ false };
     std::atomic<bool> g_abandon{ false };
     std::atomic<bool> g_testStall{ false };
+    std::atomic<bool> g_testBlockWrite{ false };
+    std::atomic<bool> g_threadAlive{ false };
     std::atomic<bool> g_testFail{ false };
 
     // Capture-thread state of the current recording.
@@ -111,6 +113,7 @@ namespace
     // One write with error accounting. After the first failure the recording is marked failed.
     bool WriteBytes(FILE* f, const char* data, size_t n, const char* what)
     {
+        while (g_testBlockWrite.load()) Sleep(5);        // test hook: a writer stuck inside a file operation
         if (g_rec.failed) return false;
         const bool injected = g_testFail.load(std::memory_order_relaxed);
         if (injected || fwrite(data, 1, n, f) != n) {
@@ -505,6 +508,7 @@ namespace
 
     DWORD WINAPI WriterMain(LPVOID)
     {
+        g_threadAlive.store(true);
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         while (g_running.load()) {
             WaitForSingleObject(g_wake, 50);
@@ -531,15 +535,17 @@ namespace
             }
         }
         try { Stop("hub_shutdown"); } catch (...) {}
+        g_threadAlive.store(false);
         return 0;
     }
 }
 
 void Capture::Init(uint32_t (*markerFn)())
 {
+    if (g_thread) { Logger::Warn("Capture: Init called while the capture thread still exists; ignored."); return; }
     QueryPerformanceFrequency(&g_freq);
     g_markerFn = markerFn;
-    g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_wake) g_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_running.store(true);
     g_thread = CreateThread(nullptr, 0, WriterMain, nullptr, 0, nullptr);
     if (!g_thread) {
@@ -548,18 +554,24 @@ void Capture::Init(uint32_t (*markerFn)())
     }
 }
 
-void Capture::Shutdown()
+bool Capture::Shutdown(DWORD timeoutMs)
 {
+    if (!g_thread) return true;
     g_running.store(false);
+    g_activeGen.store(0, std::memory_order_release);   // the render thread stops handing over frames
     if (g_wake) SetEvent(g_wake);
-    if (g_thread) {
-        if (WaitForSingleObject(g_thread, 5000) == WAIT_TIMEOUT)
-            Logger::Error("Capture: capture thread did not stop within 5 s.");
-        CloseHandle(g_thread);
-        g_thread = nullptr;
+    if (WaitForSingleObject(g_thread, timeoutMs) != WAIT_OBJECT_0) {
+        // A blocked writer. Closing its handles or letting the DLL go would pull the code from under it, so nothing is
+        // released; the caller keeps the hub loaded and asks again (SH2-Perf D012).
+        Logger::Error("Capture: the capture thread is still running after %lu ms (blocked in a file operation?); nothing is released and the hub stays loaded.", timeoutMs);
+        return false;
     }
-    if (g_wake) { CloseHandle(g_wake); g_wake = nullptr; }
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+    return true;
 }
+
+bool Capture::ThreadRunning() { return g_thread != nullptr && g_threadAlive.load(); }
 
 uint32_t Capture::ActiveGen() { return g_activeGen.load(std::memory_order_acquire); }
 
@@ -602,6 +614,9 @@ Capture::Status Capture::GetStatus()
 }
 
 void Capture::Test_StallWriter(bool stall) { g_testStall.store(stall); }
+void Capture::Test_BlockWrites(bool block) { g_testBlockWrite.store(block); }
+bool Capture::Test_ThreadAlive() { return g_threadAlive.load(); }
+bool Capture::Test_WakeHandleValid() { DWORD f = 0; return g_wake && GetHandleInformation(g_wake, &f); }
 void Capture::Test_FailNextWrites(bool fail) { g_testFail.store(fail); }
 void Capture::Test_FailManifest(bool fail) { Manifest::Test_FailWrites(fail); }
 void Capture::Test_AbandonRecording()

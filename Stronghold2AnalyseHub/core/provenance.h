@@ -27,6 +27,11 @@ namespace Provenance
 
     // Starts the hashing thread (once). Call from the hub init thread after Logger::Init.
     void Start();
+    // Asks the hashing thread to stop (it checks between 1 MB chunks) and waits up to `timeoutMs` for it to END. true = the
+    // thread has ended (or never ran); false = still running: its handle stays open and the DLL must not be unloaded.
+    bool Shutdown(DWORD timeoutMs);
+    bool ThreadRunning();
+    bool Cancelled();                              // the identity is incomplete because hashing was stopped
     // Blocks up to `timeoutMs` until the hashing is done; false = not finished (identity pending).
     bool Wait(DWORD timeoutMs);
     // Result of Start(); valid after Wait() returned true.
@@ -37,7 +42,8 @@ namespace Provenance
     std::wstring HubDir();
 
     // Full SHA-256 of a file, lowercase hex; empty on error. `sizeOut` receives the bytes hashed.
-    std::string Sha256File(const wchar_t* path, uint64_t* sizeOut = nullptr);
+    // `cancel`: checked between chunks; a cancelled hash returns an empty string.
+    std::string Sha256File(const wchar_t* path, uint64_t* sizeOut = nullptr, const std::atomic<bool>* cancel = nullptr);
 
     // Helpers shared with the manifest writer.
     std::string Utf8(const std::wstring& w);
@@ -45,4 +51,9 @@ namespace Provenance
     std::string RandomHex(size_t bytes);        // BCryptGenRandom; falls back to tick/pid mixing
     std::string NowUtcIso();                    // 2026-10-15T01:44:11Z
     std::string NowUtcCompact();                // 20261015T014411Z
+
+    // Test hooks (tests/lifecycle_test.cpp): 1 = hashing stalls and ignores the stop request until released with 0;
+    // 2 = hashing stalls but honours the stop request. Test_Reset() re-arms Start() after the thread has ended.
+    void Test_StallHash(int mode);
+    void Test_Reset();
 }

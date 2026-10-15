@@ -36,6 +36,7 @@ add_library(Stronghold2AnalyseHub SHARED
     Stronghold2AnalyseHub/core/capture.cpp
     Stronghold2AnalyseHub/core/manifest.cpp
     Stronghold2AnalyseHub/core/provenance.cpp
+    Stronghold2AnalyseHub/core/lifecycle.cpp
     Stronghold2AnalyseHub/core/logger.cpp
     Stronghold2AnalyseHub/core/metrics.cpp
     Stronghold2AnalyseHub/core/sampler.cpp
@@ -71,6 +72,14 @@ add_executable(capture_test tests/capture_test.cpp Stronghold2AnalyseHub/core/ca
 target_precompile_headers(capture_test PRIVATE Stronghold2AnalyseHub/pch.h)
 target_compile_definitions(capture_test PRIVATE HUB_GIT_COMMIT="test")
 target_link_libraries(capture_test PRIVATE minhook imgui d3d9 psapi winmm bcrypt)
+
+# Background-thread lifecycle (blocked writer / sampler / hashing at unload): build/Release/lifecycle_test.exe
+add_executable(lifecycle_test tests/lifecycle_test.cpp Stronghold2AnalyseHub/core/capture.cpp Stronghold2AnalyseHub/core/config.cpp
+    Stronghold2AnalyseHub/core/manifest.cpp Stronghold2AnalyseHub/core/provenance.cpp Stronghold2AnalyseHub/core/sampler.cpp
+    Stronghold2AnalyseHub/core/lifecycle.cpp Stronghold2AnalyseHub/core/logger.cpp)
+target_precompile_headers(lifecycle_test PRIVATE Stronghold2AnalyseHub/pch.h)
+target_compile_definitions(lifecycle_test PRIVATE HUB_GIT_COMMIT="test")
+target_link_libraries(lifecycle_test PRIVATE minhook imgui d3d9 psapi winmm bcrypt)
 
 # D3D9 stand-in for the game, to test proxy + hub + sampler without Stronghold 2: build/Release/standin_d3d9.exe
 add_executable(standin_d3d9 tests/standin_d3d9.cpp)

@@ -107,14 +107,19 @@ namespace
         else ++g_stats.dropped;
     }
 
+    std::atomic<bool> g_alive{ false };
+    std::atomic<bool> g_testBlock{ false };
+
     DWORD WINAPI SamplerThread(LPVOID)
     {
+        g_alive.store(true);
         QueryPerformanceFrequency(&g_freq);
         timeBeginPeriod(1);
         HANDLE h = nullptr;
         DWORD openTid = 0;
         DWORD lastRefresh = 0;
         while (g_running.load()) {
+            while (g_testBlock.load()) Sleep(5);          // test hook: a sampler thread that does not come back
             if (!g_active.load()) { Sleep(10); continue; }
             const DWORD tid = g_target.load();
             if (tid == 0) { Sleep(10); continue; }
@@ -148,6 +153,7 @@ namespace
         }
         if (h) CloseHandle(h);
         timeEndPeriod(1);
+        g_alive.store(false);
         return 0;
     }
 }
@@ -171,18 +177,25 @@ void Sampler::Init()
         g_mode == Mode::Module ? "module" : "function", g_intervalMs);
 }
 
-void Sampler::Shutdown()
+bool Sampler::Shutdown(DWORD timeoutMs)
 {
     g_active.store(false);
     g_running.store(false);
-    if (g_thread) {
-        WaitForSingleObject(g_thread, 2000);
-        CloseHandle(g_thread);
-        g_thread = nullptr;
+    if (!g_thread) return true;
+    if (WaitForSingleObject(g_thread, timeoutMs) != WAIT_OBJECT_0) {
+        Logger::Error("Sampler: the sampler thread is still running after %lu ms; the hub stays loaded until it ends.", timeoutMs);
+        return false;
     }
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+    return true;
 }
 
+bool Sampler::ThreadRunning() { return g_thread != nullptr && g_alive.load(); }
+
 Sampler::Mode Sampler::GetMode() { return g_mode; }
+void Sampler::Test_BlockThread(bool block) { g_testBlock.store(block); }
+bool Sampler::Test_ThreadAlive() { return g_alive.load(); }
 void Sampler::SetTarget(uint32_t tid) { g_target.store(tid); }
 
 void Sampler::Begin(const std::wstring& csvPath, uint32_t (*markerFn)())
