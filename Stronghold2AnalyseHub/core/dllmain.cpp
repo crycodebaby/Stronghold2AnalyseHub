@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "logger.h"
 #include "metrics.h"
+#include "sampler.h"
 #include "../hooks/d3d9_hooks.h"
 
 #include <bcrypt.h>
@@ -87,6 +88,7 @@ namespace
         Logger::Info("DLL attached (hub %s).", HUB_GIT_COMMIT);
 
         const bool installed = D3D9Hooks::Install();
+        Sampler::Init();
 
         // Tell the starter (launcher or proxy) that the game may continue.
         // Signalled on failure too, so nobody waits for nothing.
@@ -132,6 +134,8 @@ namespace
             Sleep(50);
         }
 
+        Metrics::Shutdown();
+        Sampler::Shutdown();
         D3D9Hooks::Uninstall();
         Logger::Info("DLL detaching.");
         Logger::Shutdown();

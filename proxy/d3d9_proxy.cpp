@@ -14,6 +14,7 @@
 //   hub=1                             ; 0 = plain pass-through, hub not loaded
 //   hubdll=Stronghold2AnalyseHub.dll  ; relative to this DLL's folder
 //   out=SH2Perf_out                   ; hub output dir, relative to this DLL's folder
+//   sample=off                        ; sampling profiler: off | module | function (hub only)
 // Environment overrides: SH2HUB_DISABLE=1 (hub off), SH2HUB_OUT=<dir> (output dir).
 // Diagnostics: <out>\SH2Proxy.log (rewritten on every start) and OutputDebugString.
 #define WIN32_LEAN_AND_MEAN
@@ -101,6 +102,12 @@ namespace
             SetEnvironmentVariableW(L"SH2HUB_OUT", out);
         }
         CreateDirectoryW(out, nullptr);
+        // Sampling profiler mode for the hub (off | module | function); env wins over the ini.
+        wchar_t sample[16];
+        if (!GetEnvironmentVariableW(L"SH2HUB_SAMPLE", sample, 16)) {
+            GetPrivateProfileStringW(L"proxy", L"sample", L"off", sample, 16, g_ini);
+            SetEnvironmentVariableW(L"SH2HUB_SAMPLE", sample);
+        }
         wchar_t logPath[MAX_PATH];
         swprintf_s(logPath, L"%s\\SH2Proxy.log", out);
         g_log = CreateFileW(logPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,

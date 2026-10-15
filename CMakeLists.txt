@@ -34,6 +34,7 @@ add_library(Stronghold2AnalyseHub SHARED
     Stronghold2AnalyseHub/core/dllmain.cpp
     Stronghold2AnalyseHub/core/logger.cpp
     Stronghold2AnalyseHub/core/metrics.cpp
+    Stronghold2AnalyseHub/core/sampler.cpp
     Stronghold2AnalyseHub/hooks/d3d9_hooks.cpp)
 target_precompile_headers(Stronghold2AnalyseHub PRIVATE Stronghold2AnalyseHub/pch.h)
 
@@ -46,10 +47,19 @@ if(NOT HUB_GIT_COMMIT)
     set(HUB_GIT_COMMIT "unknown")
 endif()
 target_compile_definitions(Stronghold2AnalyseHub PRIVATE HUB_GIT_COMMIT="${HUB_GIT_COMMIT}")
-target_link_libraries(Stronghold2AnalyseHub PRIVATE minhook imgui d3d9 psapi bcrypt)
+target_link_libraries(Stronghold2AnalyseHub PRIVATE minhook imgui d3d9 psapi bcrypt winmm)
 
 add_executable(SH2Launcher launcher/launcher.cpp)
 
 # d3d9.dll proxy: loads the hub without an injector (SH2-Perf docs/DECISIONS.md D009).
 add_library(d3d9_proxy SHARED proxy/d3d9_proxy.cpp proxy/d3d9.def)
 set_target_properties(d3d9_proxy PROPERTIES OUTPUT_NAME d3d9)
+
+# Sampler validation without the game (docs/design/SAMPLING_PROFILER.md): build/Release/sampler_test.exe
+add_executable(sampler_test tests/sampler_test.cpp Stronghold2AnalyseHub/core/sampler.cpp Stronghold2AnalyseHub/core/logger.cpp)
+target_precompile_headers(sampler_test PRIVATE Stronghold2AnalyseHub/pch.h)
+target_link_libraries(sampler_test PRIVATE minhook imgui d3d9 psapi winmm)
+
+# D3D9 stand-in for the game, to test proxy + hub + sampler without Stronghold 2: build/Release/standin_d3d9.exe
+add_executable(standin_d3d9 tests/standin_d3d9.cpp)
+target_link_libraries(standin_d3d9 PRIVATE d3d9)

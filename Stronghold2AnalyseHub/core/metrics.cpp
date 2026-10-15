@@ -1,5 +1,6 @@
 #include "metrics.h"
 #include "logger.h"
+#include "sampler.h"
 
 // -----------------------------------------------------------------------------
 // Implementation notes:
@@ -76,6 +77,7 @@ namespace
     // Current recording, for latest.json.
     std::string g_recordStem;      // e.g. SH2Perf_20261015_120000
     std::string g_recordStartIso;
+    bool        g_samplesWritten = false;
     uint64_t    g_recordStartFrame = 0;
 
     std::string LocalIso()
@@ -115,10 +117,13 @@ namespace
             "  \"stop\": \"%s\",\n"
             "  \"frames\": %llu,\n"
             "  \"markers\": %u,\n"
+            "%s"
             "  \"hub_commit\": \"%s\"\n"
             "}\n",
             g_recordStem.c_str(), g_recordStem.c_str(), g_recordStartIso.c_str(), LocalIso().c_str(),
-            g_frameIndex - g_recordStartFrame, g_markers.load(), HUB_GIT_COMMIT);
+            g_frameIndex - g_recordStartFrame, g_markers.load(),
+            g_samplesWritten ? ("  \"samples_csv\": \"" + g_recordStem + "_samples.csv\",\n").c_str() : "",
+            HUB_GIT_COMMIT);
         fclose(f);
     }
 
@@ -139,6 +144,7 @@ namespace
         if (g_threadCsv) fclose(g_threadCsv);
         g_frameCsv = g_threadCsv = nullptr;
         g_recording = false;
+        g_samplesWritten = Sampler::End();
         WriteLatestJson();
         Logger::Info("Recording stopped at frame %llu.", g_frameIndex);
     }
@@ -160,6 +166,7 @@ namespace
         g_recordStartTick = Now();
         g_recordStartIso = LocalIso();
         g_recordStartFrame = g_frameIndex;
+        Sampler::Begin(base + L"_samples.csv", [] { return g_markers.load(); });
         g_lastFlushTick = g_recordStartTick;
         g_recording = true;
         Logger::Info("Recording started at frame %llu.", g_frameIndex);
@@ -222,6 +229,7 @@ namespace
             s.times.betweenEndSceneMs = g_frameBetweenMs;
             s.times.overlayMs = g_frameOverlayMs;
             s.renderTid = GetCurrentThreadId();
+            Sampler::SetTarget(s.renderTid);
             s.vaUsedMb = (g_frameIndex % 30 == 0) ? VaUsedMb() : g_last.vaUsedMb;
             g_last = s;
 
