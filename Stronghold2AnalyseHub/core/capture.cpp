@@ -4,6 +4,7 @@
 #include "manifest.h"
 #include "provenance.h"
 #include "sampler.h"
+#include "granny_observer.h"
 
 #include <cerrno>
 #include <exception>
@@ -81,6 +82,8 @@ namespace
         Manifest::Plan plan;
         bool softwarePending = false;
         bool samples = false;
+        bool granny = false;                   // Granny observer active in this recording
+        bool grannyFiles = false;              // ... and its four files were written
         std::vector<std::pair<DWORD, uint64_t>> threadPrev;
         int64_t lastThreadTick = 0;
     } g_rec;
@@ -294,6 +297,12 @@ namespace
         add("frames", g_rec.stem + "_frames.csv");
         if (Config::Get().poll) add("threads", g_rec.stem + "_threads.csv");
         if (g_rec.samples) add("samples", g_rec.stem + "_samples.csv");
+        if (g_rec.grannyFiles) {
+            add("granny_meta", g_rec.stem + "_granny.json");
+            add("granny_frames", g_rec.stem + "_granny_frames.csv");
+            add("granny_instances", g_rec.stem + "_granny_instances.csv");
+            add("granny_deformers", g_rec.stem + "_granny_deformers.csv");
+        }
         if (g_rec.hasPrepared) add("prepared", g_rec.stem + "_prepared.json");
         return files;
     }
@@ -323,6 +332,7 @@ namespace
             Logger::Error("Capture: final flush of frames CSV failed (errno %d).", errno);
         }
         g_rec.samples = Sampler::End();
+        g_rec.grannyFiles = g_rec.granny && GrannyObserver::End();
         CloseFiles();
         g_rec.active = false;
 
@@ -347,7 +357,7 @@ namespace
         in.filesClosed = true;
         in.hashesOk = hashed;
         in.softwarePending = !Provenance::Wait(0);
-        in.captureOk = !g_rec.failed && dropped == 0 && g_writeErrors.load() == 0 && hashed;
+        in.captureOk = !g_rec.failed && dropped == 0 && g_writeErrors.load() == 0 && hashed && (!g_rec.granny || g_rec.grannyFiles);
         std::string manifestSha;
         const bool manifestOk = Manifest::Write(dir, in, &manifestSha) && !manifestSha.empty();
         if (!manifestOk) {
@@ -475,6 +485,7 @@ namespace
             g_va.store(static_cast<uint32_t>(VaUsedMbNow() + 0.5));
         }
         Sampler::Begin(base + L"_samples.csv", g_markerFn);
+        g_rec.granny = GrannyObserver::Begin(base);
         g_rec.active = true;
         g_recording.store(true);
         g_activeGen.store(g_rec.gen, std::memory_order_release);

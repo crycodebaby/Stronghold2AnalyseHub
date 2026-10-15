@@ -6,6 +6,7 @@
 #include "provenance.h"
 #include "lifecycle.h"
 #include "sampler.h"
+#include "granny_observer.h"
 #include "../hooks/d3d9_hooks.h"
 
 #include <exception>
@@ -96,6 +97,9 @@ namespace
         g_keepResident.store(true);
         const bool installed = D3D9Hooks::Install();
         Sampler::Init();
+        // Granny import-boundary observer: separate switch, default off (nothing patched then).
+        if (installed && GrannyObserver::Enabled())
+            GrannyObserver::Install([] { return Metrics::FrameIndex(); }, [] { return Metrics::Markers(); });
 
         // Tell the starter (launcher or proxy) that the game may continue.
         // Signalled on failure too, so nobody waits for nothing.
@@ -153,6 +157,7 @@ namespace
         }
 
         WaitForBackgroundThreads();                       // before hooks and logger go: a stuck thread may still log
+        GrannyObserver::Uninstall();                      // import slots back to granny2.dll; thunks stay resident
         D3D9Hooks::Uninstall();
         if (g_keepResident.load())
             Logger::Info("Hub deactivated: hooks disabled, background threads ended. The DLL and its trampolines stay loaded until the game exits; "

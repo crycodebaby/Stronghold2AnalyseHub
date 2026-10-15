@@ -101,19 +101,21 @@ void Config::Init()
         else if (!_wcsicmp(sampleValue.c_str(), L"off")) { s.sample = sampleOrigin; }
     }
 
+    Resolve(f.granny, s.granny, L"granny", ini);     // not part of any profile
+
     // Recording is built on the frame boundary: frametime is the master switch.
-    if (!f.frameTime && (f.counters || f.poll || f.overlay || f.sample)) {
-        Logger::Warn("Config: frametime=0 but counters/poll/overlay/sample need frame boundaries; frametime forced on.");
+    if (!f.frameTime && (f.counters || f.poll || f.overlay || f.sample || f.granny)) {
+        Logger::Warn("Config: frametime=0 but counters/poll/overlay/sample/granny need frame boundaries; frametime forced on.");
         f.frameTime = true;
         s.frameTime = "forced";
     }
     g_flags = f;
     g_sources = s;
-    Logger::Info("Config: frametime=%d counters=%d poll=%d overlay=%d beep=%d sample=%d (ini %s)",
-        f.frameTime, f.counters, f.poll, f.overlay, f.beep, f.sample,
+    Logger::Info("Config: frametime=%d counters=%d poll=%d overlay=%d beep=%d sample=%d granny=%d (ini %s)",
+        f.frameTime, f.counters, f.poll, f.overlay, f.beep, f.sample, f.granny,
         ini && GetFileAttributesW(ini) != INVALID_FILE_ATTRIBUTES ? "found" : "absent");
 }
 
 const Config::Flags& Config::Get() { return g_flags; }
 const Config::Sources& Config::GetSources() { return g_sources; }
-bool Config::NeedsHooks() { return g_flags.frameTime || g_flags.counters || g_flags.poll || g_flags.overlay || g_flags.sample; }
+bool Config::NeedsHooks() { return g_flags.frameTime || g_flags.counters || g_flags.poll || g_flags.overlay || g_flags.sample || g_flags.granny; }

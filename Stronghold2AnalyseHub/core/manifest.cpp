@@ -112,7 +112,8 @@ namespace
         j += "    \"poll\": " + Switch(f.poll, s.poll) + ",\n";
         j += "    \"overlay\": " + Switch(f.overlay, s.overlay) + ",\n";
         j += "    \"beep\": " + Switch(f.beep, s.beep) + ",\n";
-        j += std::string("    \"sample\": {\"value\": ") + Q(f.sampleMode) + ", \"source\": " + Q(s.sample) + "}\n";
+        j += std::string("    \"sample\": {\"value\": ") + Q(f.sampleMode) + ", \"source\": " + Q(s.sample) + "},\n";
+        j += "    \"granny\": " + Switch(f.granny, s.granny) + "\n";
         j += "  },\n";
 
         j += "  \"files\": [";

@@ -18,7 +18,8 @@
 // Source, strongest first, per key: environment SH2HUB_<KEY>, then SH2Proxy.ini ([proxy], next to the
 // hub DLL), then the profile (SH2HUB_PROFILE / profile=): "full" (default, behaviour of earlier
 // hub builds) or "min" (frametime only). Values: 1/0, on/off, true/false.
-// The sampling profiler (SH2HUB_SAMPLE, sample=) stays a separate switch (default off).
+// The sampling profiler (SH2HUB_SAMPLE, sample=) and the Granny observer (SH2HUB_GRANNY, granny=) stay separate
+// switches (default off) that no profile changes.
 namespace Config
 {
     struct Flags
@@ -30,6 +31,7 @@ namespace Config
         bool beep = false;
         bool sample = false;     // SH2HUB_SAMPLE is module or function (read only to decide about hooks)
         const char* sampleMode = "off";   // off | module | function
+        bool granny = false;     // Granny import-boundary observer (granny_observer.h), separate switch, default off
     };
 
     // Where each effective value came from (manifest "switches"): env | ini | profile | default | derived | forced.
@@ -42,6 +44,7 @@ namespace Config
         const char* overlay = "default";
         const char* beep = "default";
         const char* sample = "default";
+        const char* granny = "default";
         const char* profileName = "full";     // full | min
     };
 

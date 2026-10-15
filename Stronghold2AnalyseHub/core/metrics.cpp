@@ -2,6 +2,7 @@
 #include "capture.h"
 #include "logger.h"
 #include "sampler.h"
+#include "granny_observer.h"
 
 // -----------------------------------------------------------------------------
 // Implementation notes:
@@ -74,6 +75,7 @@ namespace
                 g_lastRenderTid = s.renderTid;
                 Sampler::SetTarget(s.renderTid);
                 Capture::SetRenderTid(s.renderTid);
+                GrannyObserver::SetOwnerTid(s.renderTid);
             }
             s.vaUsedMb = Capture::VaUsedMb();          // last value polled by the capture thread
             g_last = s;
@@ -111,6 +113,7 @@ namespace
             Logger::Info("Histogram reset at frame %llu.", g_frameIndex);
         }
 
+        GrannyObserver::OnFrameEnd(g_frameIndex, g_markers.load(std::memory_order_relaxed));   // no-op unless observing
         g_current = {};
         g_frameEndSceneMs = g_frameBetweenMs = g_frameOverlayMs = 0;
         g_lastFrameTick = now;

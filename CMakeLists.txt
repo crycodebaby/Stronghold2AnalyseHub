@@ -40,6 +40,7 @@ add_library(Stronghold2AnalyseHub SHARED
     Stronghold2AnalyseHub/core/logger.cpp
     Stronghold2AnalyseHub/core/metrics.cpp
     Stronghold2AnalyseHub/core/sampler.cpp
+    Stronghold2AnalyseHub/core/granny_observer.cpp
     Stronghold2AnalyseHub/hooks/d3d9_hooks.cpp)
 target_precompile_headers(Stronghold2AnalyseHub PRIVATE Stronghold2AnalyseHub/pch.h)
 
@@ -68,7 +69,7 @@ target_link_libraries(sampler_test PRIVATE minhook imgui d3d9 psapi winmm)
 # Capture pipeline test without the game (ring, overflow, write/open errors, lifecycle): build/Release/capture_test.exe
 add_executable(capture_test tests/capture_test.cpp Stronghold2AnalyseHub/core/capture.cpp Stronghold2AnalyseHub/core/config.cpp
     Stronghold2AnalyseHub/core/manifest.cpp Stronghold2AnalyseHub/core/provenance.cpp
-    Stronghold2AnalyseHub/core/sampler.cpp Stronghold2AnalyseHub/core/logger.cpp)
+    Stronghold2AnalyseHub/core/sampler.cpp Stronghold2AnalyseHub/core/granny_observer.cpp Stronghold2AnalyseHub/core/logger.cpp)
 target_precompile_headers(capture_test PRIVATE Stronghold2AnalyseHub/pch.h)
 target_compile_definitions(capture_test PRIVATE HUB_GIT_COMMIT="test")
 target_link_libraries(capture_test PRIVATE minhook imgui d3d9 psapi winmm bcrypt)
@@ -76,10 +77,20 @@ target_link_libraries(capture_test PRIVATE minhook imgui d3d9 psapi winmm bcrypt
 # Background-thread lifecycle (blocked writer / sampler / hashing at unload): build/Release/lifecycle_test.exe
 add_executable(lifecycle_test tests/lifecycle_test.cpp Stronghold2AnalyseHub/core/capture.cpp Stronghold2AnalyseHub/core/config.cpp
     Stronghold2AnalyseHub/core/manifest.cpp Stronghold2AnalyseHub/core/provenance.cpp Stronghold2AnalyseHub/core/sampler.cpp
-    Stronghold2AnalyseHub/core/lifecycle.cpp Stronghold2AnalyseHub/core/logger.cpp)
+    Stronghold2AnalyseHub/core/lifecycle.cpp Stronghold2AnalyseHub/core/granny_observer.cpp Stronghold2AnalyseHub/core/logger.cpp)
 target_precompile_headers(lifecycle_test PRIVATE Stronghold2AnalyseHub/pch.h)
 target_compile_definitions(lifecycle_test PRIVATE HUB_GIT_COMMIT="test")
 target_link_libraries(lifecycle_test PRIVATE minhook imgui d3d9 psapi winmm bcrypt)
+
+# Granny import-boundary observer without the game (SH2-Perf EXP-008): stand-in granny2.dll with the same decorated stdcall
+# exports + a test exe that imports from it like Stronghold2.exe. build/Release/granny_observer_test.exe (granny2.dll next to it)
+add_library(fake_granny2 SHARED tests/fake_granny2.cpp)
+set_target_properties(fake_granny2 PROPERTIES OUTPUT_NAME granny2)
+add_executable(granny_observer_test tests/granny_observer_test.cpp Stronghold2AnalyseHub/core/granny_observer.cpp
+    Stronghold2AnalyseHub/core/config.cpp Stronghold2AnalyseHub/core/logger.cpp)
+target_precompile_headers(granny_observer_test PRIVATE Stronghold2AnalyseHub/pch.h)
+target_compile_definitions(granny_observer_test PRIVATE HUB_GIT_COMMIT="test")
+target_link_libraries(granny_observer_test PRIVATE fake_granny2 minhook imgui d3d9 psapi winmm)
 
 # D3D9 stand-in for the game, to test proxy + hub + sampler without Stronghold 2: build/Release/standin_d3d9.exe
 add_executable(standin_d3d9 tests/standin_d3d9.cpp)
