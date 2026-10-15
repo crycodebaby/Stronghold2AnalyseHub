@@ -46,6 +46,10 @@ if(NOT HUB_GIT_COMMIT)
     set(HUB_GIT_COMMIT "unknown")
 endif()
 target_compile_definitions(Stronghold2AnalyseHub PRIVATE HUB_GIT_COMMIT="${HUB_GIT_COMMIT}")
-target_link_libraries(Stronghold2AnalyseHub PRIVATE minhook imgui d3d9 psapi)
+target_link_libraries(Stronghold2AnalyseHub PRIVATE minhook imgui d3d9 psapi bcrypt)
 
 add_executable(SH2Launcher launcher/launcher.cpp)
+
+# d3d9.dll proxy: loads the hub without an injector (SH2-Perf docs/DECISIONS.md D009).
+add_library(d3d9_proxy SHARED proxy/d3d9_proxy.cpp proxy/d3d9.def)
+set_target_properties(d3d9_proxy PROPERTIES OUTPUT_NAME d3d9)

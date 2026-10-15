@@ -20,9 +20,10 @@ namespace
         return buf;
     }
 
-    void WriteLine(const wchar_t* level, const char* utf8)
+    // Caller holds g_mutex. std::mutex is not recursive: locking it twice on one
+    // thread throws std::system_error, which used to abort the game from Init().
+    void WriteLineLocked(const wchar_t* level, const char* utf8)
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
         if (!g_ready) return;
 
         const auto ts = NowTimestamp();
@@ -40,6 +41,12 @@ namespace
         g_stream << L"[" << ts << L"][" << level << L"][PID:" << pid << L"][TID:" << tid << L"] "
             << msg << L"\n";
         g_stream.flush();
+    }
+
+    void WriteLine(const wchar_t* level, const char* utf8)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        WriteLineLocked(level, utf8);
     }
 
     void VLog(const wchar_t* level, const char* fmt, va_list ap)
@@ -75,7 +82,7 @@ void Logger::Init(const wchar_t* fileName)
     g_stream.open(fullPath, std::ios::out | std::ios::app);
     g_ready = g_stream.is_open();
 
-    if (g_ready) WriteLine(L"INFO", "Logger initialized");
+    if (g_ready) WriteLineLocked(L"INFO", "Logger initialized");
 }
 
 void Logger::Info(const char* fmt, ...)

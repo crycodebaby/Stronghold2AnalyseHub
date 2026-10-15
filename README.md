@@ -25,8 +25,9 @@ This is intentionally modest and readable—meant to be a solid base for deeper 
 1. **Clone** the repo and open the Visual Studio solution.
 2. Place **ImGui** and **MinHook** sources in `external/` (see folder layout above).
 3. Build the project as **Win32 / Release**, **DLL**.
-4. Inject the produced DLL into the Stronghold 2 process (any standard loader using `CreateRemoteThread + LoadLibraryW` will do).
-5. Look for `Stronghold2AnalyseHub.log` next to the game’s `.exe` to follow the timeline:
+4. Copy `d3d9.dll` (proxy) and `Stronghold2AnalyseHub.dll` next to the game’s `.exe` and start the game normally
+   (see *Run* below; injecting with `CreateRemoteThread + LoadLibraryW` also works).
+5. Look for `Stronghold2AnalyseHub.log` in the output folder (default `SH2Perf_out` next to the game’s `.exe`) to follow the timeline:
    - D3D9 creation
    - Device creation
    - Device reset
@@ -51,7 +52,7 @@ This is intentionally modest and readable—meant to be a solid base for deeper 
 - Frame & sim tick correlation
 - Safely reading game structures (telemetry first, no patching initially)
 - Visualization layers for navigation graphs / pathfinding
-- Optional DX9 proxy mode (`d3d9.dll`) for zero-setup injection
+- ~~Optional DX9 proxy mode (`d3d9.dll`) for zero-setup injection~~ done, see *Run*
 
 ## Perf metrics (branch `perf-metrics`)
 
@@ -79,15 +80,48 @@ cmake --build build --config Release
 
 Produces `build/Release/Stronghold2AnalyseHub.dll` (static CRT) and `build/Release/SH2Launcher.exe`.
 
-### Run
+### Run (d3d9.dll proxy, default)
+
+Put next to `Stronghold2.exe`: `d3d9.dll` (proxy), `Stronghold2AnalyseHub.dll`, optionally `SH2Proxy.ini`.
+Then start the game normally. The game loads the proxy as its `d3d9.dll`; the proxy loads the real
+d3d9 and the hub, and its `Direct3DCreate9` waits until the hub's hook is installed. No injector,
+no suspended process.
+
+`SH2Proxy.ini` (all keys optional, ASCII):
 
 ```
-SH2Launcher.exe "C:\path\to\Stronghold2.exe" [path\to\Stronghold2AnalyseHub.dll]
+[proxy]
+target=system                     ; real d3d9: system dir, or e.g. d3d9_dxvk.dll (DXVK renamed)
+hub=1                             ; 0 = pass-through only, hub not loaded (no rebuild needed)
+hubdll=Stronghold2AnalyseHub.dll  ; relative to the proxy's folder
+out=SH2Perf_out                   ; output dir for logs/CSVs, relative to the proxy's folder
 ```
 
-The launcher starts the game suspended, injects the DLL, waits until the `Direct3DCreate9` hook is
-installed and then resumes the game. Steam must be running; when the game is started directly,
-put a `steam_appid.txt` containing `40960` next to `Stronghold2.exe`.
+Environment overrides: `SH2HUB_DISABLE=1` (hub off), `SH2HUB_OUT=<dir>` (output dir).
+DXVK: rename DXVK's x32 `d3d9.dll` to `d3d9_dxvk.dll` and set `target=d3d9_dxvk.dll`.
+Back to vanilla: delete `d3d9.dll`, `Stronghold2AnalyseHub.dll`, `SH2Proxy.ini`.
+
+Output folder:
+- `SH2Proxy.log`: loader steps (config, real d3d9 path, hub ready / timeout / disabled), rewritten per start.
+- `Stronghold2AnalyseHub.log`: hub timeline (appended), including the game exe's sha256 and
+  `known build: yes/no` (log only; Steam 1.5 is the known build).
+- Debug messages (`SH2Proxy:` / `SH2Hub:`) are also sent to `OutputDebugString` (DebugView).
+
+Steam must be running; when the game is started directly, put a `steam_appid.txt` containing
+`40960` next to `Stronghold2.exe`.
+
+### Run (launcher, fallback)
+
+```
+SH2Launcher.exe "C:\path\to\Stronghold2.exe" [path\to\Stronghold2AnalyseHub.dll] [--out <dir>]
+```
+
+Starts the game suspended, injects the DLL, waits until the `Direct3DCreate9` hook is installed and
+then resumes the game. Do not combine with the proxy (the hub would be loaded twice).
+Reports if the game process ends before the hub is ready (with exit code).
+
+Note: hub builds up to `d29d935` aborted the host process right after loading ("Runtime Error!
+abnormal program termination", empty log) because the logger locked its mutex twice. Fixed since.
 
 ---
 

@@ -393,21 +393,49 @@ bool D3D9Hooks::Install()
         return false;
     }
 
-    // The launcher injects before the game has initialized, so d3d9.dll may not
-    // be mapped yet. Loading it here resolves to the same file the game would
-    // load (game folder first, e.g. DXVK, then system).
-    if (!LoadLibraryW(L"d3d9.dll")) {
-        Logger::Error("LoadLibraryW(d3d9.dll) failed (%lu).", GetLastError());
-        return false;
+    // Started by the d3d9.dll proxy? Then two modules named d3d9.dll are loaded
+    // (proxy + real one), so ask the proxy which module really implements D3D9
+    // (system d3d9 or a renamed DXVK) and hook that one.
+    HMODULE real = nullptr;
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
+        for (DWORD i = 0; i < needed / sizeof(HMODULE) && i < 1024 && !real; ++i) {
+            using RealModule_t = HMODULE(WINAPI*)();
+            if (auto get = reinterpret_cast<RealModule_t>(GetProcAddress(mods[i], "SH2Proxy_RealModule")))
+                real = get();
+        }
     }
 
-    // Hook the exported entry point in d3d9.dll.
-    if (MH_CreateHookApi(L"d3d9.dll", "Direct3DCreate9",
-        reinterpret_cast<LPVOID>(Direct3DCreate9_Hook),
-        reinterpret_cast<LPVOID*>(&s_Direct3DCreate9_Orig)) != MH_OK)
-    {
-        Logger::Error("CreateHookApi(Direct3DCreate9) failed.");
-        return false;
+    if (real) {
+        wchar_t path[MAX_PATH]{};
+        GetModuleFileNameW(real, path, MAX_PATH);
+        char utf8[MAX_PATH * 3]{};
+        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), nullptr, nullptr);
+        Logger::Info("Proxy mode: real d3d9 = %s", utf8);
+        auto target = reinterpret_cast<LPVOID>(GetProcAddress(real, "Direct3DCreate9"));
+        if (!target || MH_CreateHook(target, reinterpret_cast<LPVOID>(Direct3DCreate9_Hook),
+            reinterpret_cast<LPVOID*>(&s_Direct3DCreate9_Orig)) != MH_OK)
+        {
+            Logger::Error("CreateHook(real Direct3DCreate9 at %p) failed.", target);
+            return false;
+        }
+    }
+    else {
+        // Launcher mode: the game is still suspended, so d3d9.dll may not be
+        // mapped yet. Loading it here resolves to the same file the game would
+        // load (game folder first, e.g. DXVK, then system).
+        if (!LoadLibraryW(L"d3d9.dll")) {
+            Logger::Error("LoadLibraryW(d3d9.dll) failed (%lu).", GetLastError());
+            return false;
+        }
+        if (MH_CreateHookApi(L"d3d9.dll", "Direct3DCreate9",
+            reinterpret_cast<LPVOID>(Direct3DCreate9_Hook),
+            reinterpret_cast<LPVOID*>(&s_Direct3DCreate9_Orig)) != MH_OK)
+        {
+            Logger::Error("CreateHookApi(Direct3DCreate9) failed.");
+            return false;
+        }
     }
 
     MH_EnableHook(MH_ALL_HOOKS);

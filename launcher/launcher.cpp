@@ -101,9 +101,21 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
-    if (WaitForSingleObject(ready, 10000) != WAIT_OBJECT_0)
-        fprintf(stderr, "SH2Launcher: no ready signal within 10 s; resuming anyway\n");
+    // Wait for the hub, but notice if the game process dies meanwhile
+    // (an exception in the hub thread aborts the whole process).
+    HANDLE waitFor[2] = { ready, pi.hProcess };
+    const DWORD waited = WaitForMultipleObjects(2, waitFor, FALSE, 10000);
     CloseHandle(ready);
+    if (waited == WAIT_OBJECT_0 + 1) {
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        fprintf(stderr, "SH2Launcher: game process ended before the hub was ready (exit code 0x%08lX)\n", code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
+    if (waited != WAIT_OBJECT_0)
+        fprintf(stderr, "SH2Launcher: no ready signal within 10 s; resuming anyway\n");
 
     ResumeThread(pi.hThread);
     printf("SH2Launcher: game PID %lu started with %ls\nSH2Launcher: output -> %ls\n",
