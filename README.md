@@ -65,8 +65,9 @@ ctest --test-dir build -C Release --output-on-failure -LE timing
 | `sampler_overhead` (`sampler_test --checks overhead`, label `timing`) | the same run, plus busy-loop slowdown below 5 % (reported, not gating) | ~9 s |
 
 All tests write only into a new folder under `%TEMP%` and exit with 0 on success. Only the sampler's 5 % overhead
-threshold is load- and hardware-dependent: on 2026-10-16 it measured 5.3-6.1 % on the development machine while
-other work was running (load is a possible, unproven cause) and failed, while every functional check passed. It is
+threshold is load- and hardware-dependent: in repeated runs on 2026-10-16 the development machine measured between
+3.8 % and 6.3 %, mostly above 5 %, while other work was running (load is a possible, unproven cause); every functional
+check passed in every run. It is
 therefore a separate CTest entry that CI reports without gating; the functional checks gate. The threshold is unchanged. The end-to-end run with the real proxy and hub DLL against a
 D3D9 stand-in program (`e2e_standin.py`) lives in the research repository because it uses its import tools.
 
