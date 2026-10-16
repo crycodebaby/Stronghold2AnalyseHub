@@ -9,7 +9,7 @@ A d3d9 proxy, a measurement DLL ("hub") with an optional ImGui overlay, and game
 > **Status: research instrumentation, not a performance mod.** The hub observes the game; it does not make it
 > faster. No performance improvement has been shown so far. The measurement results, the analysis tools and the
 > current research plan live in the companion repository
-> **[Stronghold2PerformanceResearch](https://github.com/OWNER/Stronghold2PerformanceResearch)** (start with its
+> **[Stronghold2PerformanceResearch](https://github.com/crycodebaby/Stronghold2PerformanceResearch)** (start with its
 > README). This repository holds only the code that runs inside or next to the game.
 
 ## What it does
@@ -61,11 +61,13 @@ ctest --test-dir build -C Release --output-on-failure -LE timing
 | `capture_test` | ring, overflow, open/write errors, lifecycle, push cost, manifests and provenance | ~13 s |
 | `lifecycle_test` | blocked writer / sampler / hashing thread at deactivation, unload order | ~12 s |
 | `granny_observer_test` | observer off = no import slot touched; every call forwarded once with bit-identical arguments; scripted data; table/row limits; restore on END. Uses the stand-in `granny2.dll` | < 1 s |
-| `sampler_test` (label `timing`) | attribution of a busy and a waiting thread; overhead of a busy loop below 5 % | ~15 s |
+| `sampler_functional` (`sampler_test --checks functional`) | mode from the environment, samples file written, > 100 samples in 3 s, attribution of a busy and a waiting thread (gating) | ~9 s |
+| `sampler_overhead` (`sampler_test --checks overhead`, label `timing`) | the same run, plus busy-loop slowdown below 5 % (reported, not gating) | ~9 s |
 
-All tests write only into a new folder under `%TEMP%` and exit with 0 on success. `sampler_test`'s 5 % threshold is
-load-dependent: on 2026-10-16 it measured 5.3-6.1 % on a busy development machine and failed, while its attribution
-checks passed. CI therefore reports it without gating. The end-to-end run with the real proxy and hub DLL against a
+All tests write only into a new folder under `%TEMP%` and exit with 0 on success. Only the sampler's 5 % overhead
+threshold is load- and hardware-dependent: on 2026-10-16 it measured 5.3-6.1 % on the development machine while
+other work was running (load is a possible, unproven cause) and failed, while every functional check passed. It is
+therefore a separate CTest entry that CI reports without gating; the functional checks gate. The threshold is unchanged. The end-to-end run with the real proxy and hub DLL against a
 D3D9 stand-in program (`e2e_standin.py`) lives in the research repository because it uses its import tools.
 
 What these tests do **not** show: behaviour inside Stronghold 2, hook latency in the real game, or that the observer is
@@ -150,9 +152,10 @@ sharing a log (see CONTRIBUTING.md).
 ## Version pair
 
 The verified pair for the first public release is listed in the research repository (`README.md`, "Verified version
-pair"). On this branch the runtime sources (`Stronghold2AnalyseHub/`, `proxy/`, `launcher/`, `tests/`) are identical to
+pair"). On this branch the runtime sources (`Stronghold2AnalyseHub/`, `proxy/`, `launcher/`) are identical to
 `perf-metrics` commit `32ebc38a05ea`, the build used for the latest in-game recordings; later commits change only
-documentation, licensing and test registration.
+documentation, licensing, test registration and the check selection of `tests/sampler_test.cpp`. All earlier commit
+ids are kept (no rebase or squash), because recording manifests name them.
 
 ## Contributing
 

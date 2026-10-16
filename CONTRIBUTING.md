@@ -2,7 +2,7 @@
 
 This repository is the in-game side of a measurement project: proxy, hub DLL, overlay and native tests. Research
 questions, findings and experiment protocols are kept in
-[Stronghold2PerformanceResearch](https://github.com/OWNER/Stronghold2PerformanceResearch); read its README and
+[Stronghold2PerformanceResearch](https://github.com/crycodebaby/Stronghold2PerformanceResearch); read its README and
 `docs/STATE.md` before proposing hub changes, so a change answers a concrete measurement question.
 
 ## Set up and test
@@ -13,7 +13,7 @@ Follow "Build" and "Tests without the game" in the [README](README.md). Before o
 cmake -S . -B build -A Win32          # again after each commit (the commit id is baked in)
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure -LE timing
-ctest --test-dir build -C Release -L timing     # load-dependent; report the numbers if it fails
+ctest --test-dir build -C Release -L timing     # sampler overhead only, load-dependent; report the numbers
 ```
 
 If you have the research repository next to this one (`../Stronghold2PerformanceResearch` or the local name

@@ -7,7 +7,7 @@ Instructions for automated coding agents (any tool). Humans: see [CONTRIBUTING.m
 1. [README.md](README.md): parts, build, switches, known limits.
 2. [CONTRIBUTING.md](CONTRIBUTING.md): rules for changes and what never to commit.
 3. The research repository's `AGENTS.md` and `docs/STATE.md`
-   ([Stronghold2PerformanceResearch](https://github.com/OWNER/Stronghold2PerformanceResearch)) for the current
+   ([Stronghold2PerformanceResearch](https://github.com/crycodebaby/Stronghold2PerformanceResearch)) for the current
    question. Do not start hub work that no open research task asks for.
 
 ## Boundaries
