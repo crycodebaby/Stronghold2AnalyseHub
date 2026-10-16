@@ -1,0 +1,32 @@
+# Win32 build and the game-free native tests. No Stronghold 2 files are needed or downloaded.
+# Prepared and run locally with the same commands (see CONTRIBUTING.md); a GitHub run has not happened yet.
+name: build-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  win32:
+    runs-on: windows-2022   # Visual Studio 2022 (MSVC v143), the documented toolchain
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # git describe bakes the commit id into the hub DLL
+
+      - name: Configure (Win32)
+        run: cmake -S . -B build -A Win32
+
+      - name: Build (Release)
+        run: cmake --build build --config Release -- -m
+
+      - name: Tests (gating)
+        run: ctest --test-dir build -C Release --output-on-failure -LE timing
+
+      - name: Timing test (reported, not gating)
+        continue-on-error: true
+        run: ctest --test-dir build -C Release --output-on-failure -L timing

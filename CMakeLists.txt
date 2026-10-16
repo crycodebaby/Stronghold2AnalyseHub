@@ -95,3 +95,13 @@ target_link_libraries(granny_observer_test PRIVATE fake_granny2 minhook imgui d3
 # D3D9 stand-in for the game, to test proxy + hub + sampler without Stronghold 2: build/Release/standin_d3d9.exe
 add_executable(standin_d3d9 tests/standin_d3d9.cpp)
 target_link_libraries(standin_d3d9 PRIVATE d3d9)
+
+# Game-free tests: ctest --test-dir build -C Release --output-on-failure -LE timing
+# Each test writes only into a new folder under %TEMP%. sampler_test carries the label "timing": its 5 % overhead
+# check measures a busy loop and depends on machine load, so CI reports it without gating on it.
+enable_testing()
+foreach(test_name capture_test lifecycle_test granny_observer_test)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endforeach()
+add_test(NAME sampler_test COMMAND sampler_test)
+set_tests_properties(sampler_test PROPERTIES LABELS timing)
