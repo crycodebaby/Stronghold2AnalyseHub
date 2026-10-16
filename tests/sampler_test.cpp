@@ -2,6 +2,10 @@
 // "Validation before trusting it", step 1): a busy loop in this exe must be attributed to this exe,
 // a thread blocked in a wait must show up in the system DLLs, markers must be separated, and
 // the loop must not slow down noticeably (overhead).
+// --checks functional: only mode, recording, sample count and attribution decide the exit code; the overhead is
+//                      measured and printed but not judged (it depends on hardware and machine load).
+// --checks overhead:   the overhead check decides as well (functional failures still count: they invalidate it).
+// --checks all (default, no argument): every check counts, as before.
 #include "../Stronghold2AnalyseHub/core/sampler.h"
 #include "../Stronghold2AnalyseHub/core/logger.h"
 
@@ -60,16 +64,32 @@ namespace
         return out;
     }
 
-    int g_failures = 0;
+    int  g_failures = 0;
+    bool g_judgeOverhead = true;
     void Check(bool ok, const char* what)
     {
         printf("%s  %s\n", ok ? "PASS" : "FAIL", what);
         if (!ok) ++g_failures;
     }
+    // Same threshold in every mode; with --checks functional the result is reported, not counted.
+    void CheckOverhead(bool ok, const char* what)
+    {
+        if (g_judgeOverhead) { Check(ok, what); return; }
+        printf("%s  %s (reported only: --checks functional)\n", ok ? "INFO-PASS" : "INFO-FAIL", what);
+    }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    const char* checks = "all";
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--checks")) checks = argv[i + 1];
+    if (strcmp(checks, "all") && strcmp(checks, "functional") && strcmp(checks, "overhead")) {
+        printf("usage: sampler_test [--checks all|functional|overhead]\n");
+        return 2;
+    }
+    g_judgeOverhead = strcmp(checks, "functional") != 0;
+    printf("checks: %s\n", checks);
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
     wcscat_s(dir, L"sh2sampler_test");
@@ -120,7 +140,7 @@ int main()
     const double slowdown = 100.0 * (1.0 - (loaded1 + loaded2) / 2 / ref);
     printf("     busy loop: %.0f it/s before, %.0f after (sampler off), %.0f / %.0f with -> slowdown %.1f %%\n",
         base, after, loaded1, loaded2, slowdown);
-    Check(slowdown < 5.0, "overhead below 5 % (synthetic worst case: busy loop on a free core; 10 ms default)");
+    CheckOverhead(slowdown < 5.0, "overhead below 5 % (synthetic worst case: busy loop on a free core; 10 ms default)");
 
     const std::wstring path2 = std::wstring(dir) + L"\\samples_wait.csv";
     g_marker = 3;

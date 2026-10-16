@@ -97,11 +97,13 @@ add_executable(standin_d3d9 tests/standin_d3d9.cpp)
 target_link_libraries(standin_d3d9 PRIVATE d3d9)
 
 # Game-free tests: ctest --test-dir build -C Release --output-on-failure -LE timing
-# Each test writes only into a new folder under %TEMP%. sampler_test carries the label "timing": its 5 % overhead
-# check measures a busy loop and depends on machine load, so CI reports it without gating on it.
+# Each test writes only into a new folder under %TEMP%. The sampler's functional checks (mode, recording, sample count,
+# attribution) gate like every other test; only its 5 % busy-loop overhead check carries the label "timing", because
+# it depends on hardware and machine load, and CI reports it without gating on it. The threshold is the same in both.
 enable_testing()
 foreach(test_name capture_test lifecycle_test granny_observer_test)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
-add_test(NAME sampler_test COMMAND sampler_test)
-set_tests_properties(sampler_test PROPERTIES LABELS timing)
+add_test(NAME sampler_functional COMMAND sampler_test --checks functional)
+add_test(NAME sampler_overhead COMMAND sampler_test --checks overhead)
+set_tests_properties(sampler_overhead PROPERTIES LABELS timing)
