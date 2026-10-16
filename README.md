@@ -1,182 +1,165 @@
 ﻿# Stronghold2AnalyseHub
 
-A lightweight analysis & overlay DLL for **Stronghold 2 (DX9/Win32)**.  
-The goal is to understand how the game engine ticks (rendering order, device lifecycle, input, timing) and to prepare a clean path toward **modding**, visual debugging, and eventually research into graphics and AI/pathfinding.
+A d3d9 proxy, a measurement DLL ("hub") with an optional ImGui overlay, and game-free native tests for
+**Stronghold 2 (Steam 1.5, 32-bit, Direct3D 9)**.
 
-> Maintainer: **crycodebaby (Germany)**  
+> Maintainer: **crycodebaby (Germany)**
 > Community contributions welcome.
 
----
+> **Status: research instrumentation, not a performance mod.** The hub observes the game; it does not make it
+> faster. No performance improvement has been shown so far. The measurement results, the analysis tools and the
+> current research plan live in the companion repository
+> **[Stronghold2PerformanceResearch](https://github.com/OWNER/Stronghold2PerformanceResearch)** (start with its
+> README). This repository holds only the code that runs inside or next to the game.
 
-## What this project does
+## What it does
 
-- Hooks **Direct3D9** creation and device lifecycle:
-  - `Direct3DCreate9` → `IDirect3D9::CreateDevice` → `IDirect3DDevice9::{EndScene, Reset}`
-- Sets up a minimal **ImGui** overlay for in-frame tools and telemetry.
-- Hooks the game window **WndProc** to route input to ImGui.
-- Provides a small, thread-safe **logger** with timestamps, PID/TID.
+| Part | Path | Role |
+|---|---|---|
+| d3d9 proxy | `proxy/` | `d3d9.dll` placed next to the game exe; loads the real d3d9 (system or DXVK) and the hub, holds `Direct3DCreate9` until the hub's hook is in place |
+| Hub DLL | `Stronghold2AnalyseHub/` | D3D9 hooks (MinHook), per-frame timing and counters, capture pipeline, manifests, optional overlay, sampler, Granny observer |
+| Launcher | `launcher/` | fallback: starts the game suspended and injects the hub (do not combine with the proxy) |
+| Tests | `tests/` | capture pipeline, deactivation lifecycle, sampler, Granny observer with a stand-in `granny2.dll`, D3D9 stand-in program |
+| Vendored | `external/` | Dear ImGui 1.92.5 WIP, MinHook (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 
-This is intentionally modest and readable—meant to be a solid base for deeper analysis (render passes, device resets, wireframe toggles, pathfinding visualizations, etc.).
-
----
-
-## Quick start
-
-1. **Clone** the repo and open the Visual Studio solution.
-2. Place **ImGui** and **MinHook** sources in `external/` (see folder layout above).
-3. Build the project as **Win32 / Release**, **DLL**.
-4. Copy `d3d9.dll` (proxy) and `Stronghold2AnalyseHub.dll` next to the game’s `.exe` and start the game normally
-   (see *Run* below; injecting with `CreateRemoteThread + LoadLibraryW` also works).
-5. Look for `Stronghold2AnalyseHub.log` in the output folder (default `SH2Perf_out` next to the game’s `.exe`) to follow the timeline:
-   - D3D9 creation
-   - Device creation
-   - Device reset
-   - Per-frame overlay rendering
-
-**Hotkeys**
-- `END` — deactivate the hub (disables the hooks, ends ImGui and the background threads, finalizes an open recording). The DLL and its trampolines stay loaded until the game exits; activating the hub again or using another hub build needs a game restart
-
----
-
-## Why this approach
-
-- Hooking from the **export** (`Direct3DCreate9`) makes us resilient across builds—no brittle signatures just to get the device.
-- We obtain the **correct HWND** via `CreateDevice`, ensuring input routing is reliable.
-- Minimal moving parts (DX9, Win32, ImGui, MinHook) that are well-understood and easy to review.
-
----
-
-## Roadmap (community-driven)
-
-- Render-state experiments (wireframe/overdraw)
-- Frame & sim tick correlation
-- Safely reading game structures (telemetry first, no patching initially)
-- Visualization layers for navigation graphs / pathfinding
-- ~~Optional DX9 proxy mode (`d3d9.dll`) for zero-setup injection~~ done, see *Run*
-
-## Perf metrics (branch `perf-metrics`)
-
-Read-only telemetry; nothing changes how the game renders or simulates.
-
-- Per frame (frame = `Present` to `Present`): frame time, time inside `Present`, time inside `EndScene`,
-  time between `EndScene` calls, overlay cost.
-- Per-frame counters: `BeginScene`, `DrawIndexedPrimitive`, `DrawPrimitive`, `DrawPrimitiveUP`,
-  `DrawIndexedPrimitiveUP`, primitives, `SetTexture`, `Set{Vertex,Pixel}ShaderConstantF` (calls + vec4 count).
-  Draw calls made by the overlay itself are excluded.
-- Frame-time histogram (<8.3, <16.7, <33.3, <50, <100, <250, <500, <1000, >=1000 ms) and a 600-frame plot.
-- Process virtual address space in use (relevant for LARGE_ADDRESS_AWARE tests).
-- Per-thread CPU usage once per second (which thread is busy, which one renders).
-- Loaded module list written to the log once (which DLL copies the loader picked).
-
-Hotkeys: `F9` record on/off, `F8` marker, `F10` reset histogram, `END` deactivate the hub (not an unload).
-Recording writes `SH2Perf_<timestamp>_frames.csv` (and `_threads.csv` with `poll`, `_samples.csv` with the sampler)
-plus `latest.json` into the output dir (`SH2HUB_OUT`, `out=` in `SH2Proxy.ini`, default `SH2Perf_out`).
-
-### Measurement switches and capture pipeline
-
-What the hub does inside the game's frame is limited on purpose. Four independent switches decide which hooks
-exist at all (env `SH2HUB_<KEY>` > `SH2Proxy.ini` `[proxy]` > profile; values `1/0`, `on/off`):
-
-| Switch | Effect |
-|---|---|
-| `frametime` | `Present` hook: frame time + time inside `Present`; master switch of recording |
-| `counters` | hooks on BeginScene, SetTexture, DrawPrimitive*, DrawIndexedPrimitive*, Set{Vertex,Pixel}ShaderConstantF; off = not hooked |
-| `poll` | per-thread CPU and address space once per second, only while recording, on the capture thread |
-| `overlay` | ImGui window (EndScene, Reset, WndProc hooks); off = not hooked, EndScene timing columns are 0 |
-| `beep` | tone on recording start/stop (default on when the overlay is off) |
-
-`profile=full` (default, all four on) or `profile=min` (`frametime` only). All switches off = no hook installed.
-The sampling profiler stays separate (`SH2HUB_SAMPLE`, default off).
-
-The render thread only copies one fixed-size record per frame into a bounded lock-free ring (8,192 frames) and never
-waits. A low-priority capture thread formats the CSV, writes the files and does start/stop work. If the ring is full
-the frame is dropped and counted; drops, open failures and write errors are logged, shown in the overlay and written to
-`latest.json` (`capture_ok`, `frames_dropped`, `write_errors`, `modes`; `capture_version: 2`). The CSV columns are
-unchanged. Details and the compatibility rule: SH2-Perf `docs/FORMATS/HUB_CAPTURE.md`, decision D011.
-
-Tests without the game: `build/Release/capture_test.exe` (ring, overflow, open/write errors, lifecycle, push cost),
-`sampler_test.exe`, `standin_d3d9.exe`.
-
-### Build (CMake, 32-bit)
+Data path: the render thread only copies one fixed-size record per frame into a bounded lock-free ring (8,192 frames)
+and never waits. A low-priority capture thread formats the CSVs, writes the files, polls thread CPU/address space and
+publishes a per-recording manifest. Drops, open failures and write errors are counted and reported, never hidden.
 
 ```
+Stronghold2.exe ── d3d9.dll (proxy) ──► real d3d9 (system or d3d9_dxvk.dll)
+                        └──► Stronghold2AnalyseHub.dll ── hooks (Present, EndScene, Draw*, ...) ──► ring
+                                                         capture thread ──► SH2Perf_out/ (CSV, manifest, logs)
+```
+
+## Build (Windows, 32-bit)
+
+Requirements: Visual Studio 2022 or its Build Tools with the C++ workload (MSVC v143, Windows SDK), CMake ≥ 3.21,
+Git. Verified with CMake 4.4.4, MSVC 19.44, Windows SDK 10.0.26100.
+
+```
+git clone https://github.com/crycodebaby/Stronghold2AnalyseHub
+cd Stronghold2AnalyseHub
 cmake -S . -B build -A Win32
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure -LE timing
 ```
 
-Produces `build/Release/Stronghold2AnalyseHub.dll` (static CRT) and `build/Release/SH2Launcher.exe`.
+- Clone to a short path (for example `C:\src\`). MSBuild fails with "path exceeds 260 characters" when the build
+  folder sits deep inside a long path such as `%TEMP%\...`.
+- `git describe` is baked into the DLL at configure time: re-run the configure step after every commit so recordings
+  name the exact hub build (`-dirty` marks an uncommitted tree).
+- Outputs in `build/Release/`: `Stronghold2AnalyseHub.dll`, `d3d9.dll` (proxy), `SH2Launcher.exe`, the test programs
+  and a **test-only** `granny2.dll` stand-in. Never copy that stand-in into a game folder.
+- The empty `Stronghold2AnalyseHub.sln` and `CppProperties.json` in the root are leftovers from the original Visual
+  Studio layout; CMake is the only supported build.
 
-### Run (d3d9.dll proxy, default)
+## Tests without the game
 
-Put next to `Stronghold2.exe`: `d3d9.dll` (proxy), `Stronghold2AnalyseHub.dll`, optionally `SH2Proxy.ini`.
-Then start the game normally. The game loads the proxy as its `d3d9.dll`; the proxy loads the real
-d3d9 and the hub, and its `Direct3DCreate9` waits until the hub's hook is installed. No injector,
-no suspended process.
+| Test | Checks | Typical time |
+|---|---|---|
+| `capture_test` | ring, overflow, open/write errors, lifecycle, push cost, manifests and provenance | ~13 s |
+| `lifecycle_test` | blocked writer / sampler / hashing thread at deactivation, unload order | ~12 s |
+| `granny_observer_test` | observer off = no import slot touched; every call forwarded once with bit-identical arguments; scripted data; table/row limits; restore on END. Uses the stand-in `granny2.dll` | < 1 s |
+| `sampler_test` (label `timing`) | attribution of a busy and a waiting thread; overhead of a busy loop below 5 % | ~15 s |
+
+All tests write only into a new folder under `%TEMP%` and exit with 0 on success. `sampler_test`'s 5 % threshold is
+load-dependent: on 2026-10-16 it measured 5.3-6.1 % on a busy development machine and failed, while its attribution
+checks passed. CI therefore reports it without gating. The end-to-end run with the real proxy and hub DLL against a
+D3D9 stand-in program (`e2e_standin.py`) lives in the research repository because it uses its import tools.
+
+What these tests do **not** show: behaviour inside Stronghold 2, hook latency in the real game, or that the observer is
+neutral with the real `granny2.dll`. In-game checks need your own copy of the game (see below).
+
+## Run (d3d9.dll proxy, default)
+
+Use a **copy** of the game folder for experiments. Put next to `Stronghold2.exe`: `d3d9.dll` (proxy),
+`Stronghold2AnalyseHub.dll`, optionally `SH2Proxy.ini`. Start the game normally. The hub logs the game exe's SHA-256
+and `known build: yes/no` (Steam 1.5 is the known build). Steam must be running; when the exe is started directly, a
+`steam_appid.txt` containing `40960` next to it is needed.
 
 `SH2Proxy.ini` (all keys optional, ASCII):
 
 ```
 [proxy]
 target=system                     ; real d3d9: system dir, or e.g. d3d9_dxvk.dll (DXVK renamed)
-hub=1                             ; 0 = pass-through only, hub not loaded (no rebuild needed)
+hub=1                             ; 0 = pass-through only, hub not loaded
 hubdll=Stronghold2AnalyseHub.dll  ; relative to the proxy's folder
-out=SH2Perf_out                   ; output dir for logs/CSVs, relative to the proxy's folder
+out=SH2Perf_out                   ; output dir, relative to the proxy's folder
+profile=full                      ; full (default) or min; single switches below override it
+[plan]                            ; planned conditions, copied into every manifest (never read from the game)
+experiment=EXP-000
+game_speed=90
 ```
 
-Environment overrides: `SH2HUB_DISABLE=1` (hub off), `SH2HUB_OUT=<dir>` (output dir).
-`SH2HUB_AUTORECORD=<frames>`: record without key presses (starts after 30 frames, stops after about
-`<frames>` frames); used for automated tests.
+Environment overrides: `SH2HUB_DISABLE=1`, `SH2HUB_OUT=<dir>`, `SH2HUB_<SWITCH>=0|1`, `SH2HUB_SAMPLE=off|module|function`,
+`SH2HUB_GRANNY=0|1`, `SH2HUB_AUTORECORD=<frames>` (record without key presses, for automated tests).
 DXVK: rename DXVK's x32 `d3d9.dll` to `d3d9_dxvk.dll` and set `target=d3d9_dxvk.dll`.
 Back to vanilla: delete `d3d9.dll`, `Stronghold2AnalyseHub.dll`, `SH2Proxy.ini`.
 
-Output folder:
-- `SH2Proxy.log`: loader steps (config, real d3d9 path, hub ready / timeout / disabled, calling module of
-  every `Direct3DCreate9`), rewritten per start.
-- `Stronghold2AnalyseHub.log`: hub timeline (appended), including the game exe's sha256 and
-  `known build: yes/no` (log only; Steam 1.5 is the known build).
-- Debug messages (`SH2Proxy:` / `SH2Hub:`) are also sent to `OutputDebugString` (DebugView).
+Launcher (fallback): `SH2Launcher.exe "C:\path\to\Stronghold2.exe" [path\to\Stronghold2AnalyseHub.dll] [--out <dir>]`.
 
-Steam must be running; when the game is started directly, put a `steam_appid.txt` containing
-`40960` next to `Stronghold2.exe`.
+### Hotkeys
 
-### Run (launcher, fallback)
+`F9` record on/off · `F8` marker · `F10` reset histogram · `END` deactivate the hub (not an unload).
+Without the overlay, F9 gives a high (start) / low (stop) tone (`beep` switch).
 
-```
-SH2Launcher.exe "C:\path\to\Stronghold2.exe" [path\to\Stronghold2AnalyseHub.dll] [--out <dir>]
-```
+### Measurement switches
 
-Starts the game suspended, injects the DLL, waits until the `Direct3DCreate9` hook is installed and
-then resumes the game. Do not combine with the proxy (the hub would be loaded twice).
-Reports if the game process ends before the hub is ready (with exit code).
+Env `SH2HUB_<KEY>` > `SH2Proxy.ini` `[proxy]` > profile. A switch that is off installs no hook at all.
 
-Note: hub builds up to `d29d935` aborted the host process right after loading ("Runtime Error!
-abnormal program termination", empty log) because the logger locked its mutex twice. Fixed since.
+| Switch | Effect | Profile `full` / `min` |
+|---|---|---|
+| `frametime` | `Present` hook: frame time and time inside `Present`; master switch of recording | on / on |
+| `counters` | BeginScene, SetTexture, Draw*, Set{Vertex,Pixel}ShaderConstantF counts | on / off |
+| `poll` | per-thread CPU and address space once per second, on the capture thread | on / off |
+| `overlay` | ImGui window (EndScene, Reset, WndProc hooks); off = EndScene timing columns are 0 | on / off |
+| `beep` | tone on recording start/stop | default on when the overlay is off |
+| `sample` | render-thread sampling profiler (`module` or `function`), separate, default off; biases frame times by ~2-5 % in the game | — |
+| `granny` | Granny import-boundary observer, separate, default off; **research only**, see limits below | — |
 
----
+### Output files (in `SH2Perf_out/`)
 
-## Notes
+Per recording: `SH2Perf_<ts>_frames.csv`, `_threads.csv` (with `poll`), `_samples.csv` (with the sampler),
+`_granny*.{json,csv}` (with the observer), `<stem>_manifest.json` (capture id, planned conditions, SHA-256 of exe, hub,
+d3d9 files and ini as hashed at load, effective switches with their source, file hashes, capture health; written as
+`recording`, published as `finalized` after the files are closed) and `<stem>_prepared.json`. `latest.json` only points
+at the newest recording. Logs: `SH2Proxy.log` (loader, rewritten per start) and `Stronghold2AnalyseHub.log` (appended).
+Formats: research repo `docs/FORMATS/HUB_CAPTURE.md`, `CAPTURE_MANIFEST.md`, `GRANNY_OBSERVER.md`.
 
-- 32-bit only (the game is 32-bit).
-- Keep changes small and reviewable. Good comments matter more than clever macros.
-- Prefer reading/logging before altering behavior when exploring the engine.
+Logs and manifests contain absolute paths of loaded modules, which usually include your user name. Remove them before
+sharing a log (see CONTRIBUTING.md).
 
----
+## Known limits
+
+- **No performance gain.** All hooks only read. The sampler and the Granny observer add measurable work; frame times
+  from sampled or observed runs are biased and are not benchmark results.
+- **Granny observer (research only).** It redirects six exe→`granny2.dll` imports on the render thread and forwards every
+  call unchanged. In the latest real-game run (hub `32ebc38`, recording `rec-20261015T122211Z-dff71642`) it still lost
+  126,632 per-instance aggregations to probe failures, so per-instance tables are incomplete; frame-level call counts
+  are complete. 609 final calls are in the totals without an emitted frame row, although frame drops read 0. Its
+  `all_observed_same` field is not a general sample-to-sample clock comparison. The native test uses a fake
+  `granny2.dll` and proves neither neutrality with the real library nor complete coverage. Details and the independent
+  audit: research repo `docs/evidence/EXP-008R_G1_PARTIAL.md` and `audits/2026-10-16-independent/`.
+- `END` deactivates; it does not unload. The DLL and its MinHook trampolines stay mapped until the game exits, so
+  re-activation or another hub build needs a game restart. A permanently blocked background thread defers deactivation.
+- A normal game exit does **not** finalize a running recording; stop with `F9` and wait for `manifest published` in the
+  log first.
+- Win32/Direct3D 9 only. Only the Steam 1.5 exe (SHA-256 `f3ccdf9b…f32d34b`) has been run with the hub.
+
+## Version pair
+
+The verified pair for the first public release is listed in the research repository (`README.md`, "Verified version
+pair"). On this branch the runtime sources (`Stronghold2AnalyseHub/`, `proxy/`, `launcher/`, `tests/`) are identical to
+`perf-metrics` commit `32ebc38a05ea`, the build used for the latest in-game recordings; later commits change only
+documentation, licensing and test registration.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); agents start with [AGENTS.md](AGENTS.md). Findings and experiment plans belong
+in the research repository.
 
 ## License
 
-MIT for our code. ImGui and MinHook maintain their respective licenses—please see their repositories.
-
-## Recording provenance (perf-metrics branch, SH2-Perf D012)
-
-Every recording writes its own `<stem>_manifest.json` next to the CSVs: capture id, session, planned conditions from
-`SH2Proxy.ini [plan]` (`experiment`, `protocol`, `scenario`, `game_speed`, `paused`), the SHA-256 of the game exe, the hub
-DLL, the d3d9 files and the ini **as hashed when the hub was loaded in that session**, the effective switches with their
-source, the file list with sizes and hashes, and the capture health. The manifest is first written with `status: recording`
-and published as `finalized` only after the capture files are closed and hashed; `latest.json` is just a pointer.
-All of this runs on the capture thread or a background hashing thread. The hub reads no game memory: game speed and pause
-are only what was planned in the ini. Format and import rules: SH2-Perf `docs/FORMATS/CAPTURE_MANIFEST.md`.
-
-### Deactivation (END key) and game exit
-`END` deactivates the hub; it does not unload it. The capture writer, the sampler and the provenance hashing thread are asked to stop and must really end first; a blocked one is logged (`Deactivation DEFERRED`) and nothing is terminated. Then the hooks are disabled and made inert, ImGui is torn down by the render thread, and the DLL with its trampolines stays loaded until the game exits (log: `Hub deactivated …`). Activating the hub again or using another hub build needs a game restart. An open recording is finalized by the deactivation.
-
-A **normal exit of the game does not finalize** a running recording (the process ends the hub's threads; verified in the stand-in): the manifest stays at `status: recording`, like after a hard kill, and the importer treats it as interrupted. Stop the recording with `F9` and wait for `Recording stopped … manifest published` in the log before quitting the game. Details: SH2-Perf D013.
+MIT for this project's own code ([LICENSE.txt](LICENSE.txt)). Dear ImGui and MinHook keep their licenses
+([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Stronghold 2 and its files are not part of this repository.
