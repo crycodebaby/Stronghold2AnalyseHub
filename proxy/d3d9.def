@@ -1,0 +1,22 @@
+; Exports of the d3d9.dll proxy (proxy/d3d9_proxy.cpp). Names match the
+; system d3d9.dll and DXVK 3.1.1 x32 (17 named exports each).
+LIBRARY d3d9
+EXPORTS
+    D3DPERF_BeginEvent=Stub_D3DPERF_BeginEvent
+    D3DPERF_EndEvent=Stub_D3DPERF_EndEvent
+    D3DPERF_GetStatus=Stub_D3DPERF_GetStatus
+    D3DPERF_QueryRepeatFrame=Stub_D3DPERF_QueryRepeatFrame
+    D3DPERF_SetMarker=Stub_D3DPERF_SetMarker
+    D3DPERF_SetOptions=Stub_D3DPERF_SetOptions
+    D3DPERF_SetRegion=Stub_D3DPERF_SetRegion
+    DebugSetLevel=Stub_DebugSetLevel
+    DebugSetMute=Stub_DebugSetMute
+    Direct3D9EnableMaximizedWindowedModeShim=Stub_Direct3D9EnableMaximizedWindowedModeShim
+    Direct3DCreate9=Proxy_Direct3DCreate9
+    Direct3DCreate9Ex=Stub_Direct3DCreate9Ex
+    Direct3DCreate9On12=Stub_Direct3DCreate9On12
+    Direct3DCreate9On12Ex=Stub_Direct3DCreate9On12Ex
+    Direct3DShaderValidatorCreate9=Stub_Direct3DShaderValidatorCreate9
+    PSGPError=Stub_PSGPError
+    PSGPSampleTexture=Stub_PSGPSampleTexture
+    SH2Proxy_RealModule

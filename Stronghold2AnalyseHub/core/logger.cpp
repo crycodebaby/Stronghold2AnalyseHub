@@ -20,9 +20,10 @@ namespace
         return buf;
     }
 
-    void WriteLine(const wchar_t* level, const char* utf8)
+    // Caller holds g_mutex. std::mutex is not recursive: locking it twice on one
+    // thread throws std::system_error, which used to abort the game from Init().
+    void WriteLineLocked(const wchar_t* level, const char* utf8)
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
         if (!g_ready) return;
 
         const auto ts = NowTimestamp();
@@ -42,6 +43,12 @@ namespace
         g_stream.flush();
     }
 
+    void WriteLine(const wchar_t* level, const char* utf8)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        WriteLineLocked(level, utf8);
+    }
+
     void VLog(const wchar_t* level, const char* fmt, va_list ap)
     {
         char buf[2048];
@@ -50,22 +57,32 @@ namespace
     }
 }
 
+std::wstring Logger::OutputDir()
+{
+    // SH2Launcher passes the directory via the environment (inherited by the game).
+    wchar_t dir[MAX_PATH]{};
+    const DWORD n = GetEnvironmentVariableW(L"SH2HUB_OUT", dir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        GetModuleFileNameW(nullptr, dir, MAX_PATH);
+        if (wchar_t* p = wcsrchr(dir, L'\\')) *p = L'\0';
+    }
+    std::wstring out(dir);
+    CreateDirectoryW(out.c_str(), nullptr); // ok if it exists
+    if (!out.empty() && out.back() != L'\\') out += L'\\';
+    return out;
+}
+
 void Logger::Init(const wchar_t* fileName)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_ready) return;
 
-    wchar_t exePath[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-    // Place the log next to the game executable.
-    if (wchar_t* p = wcsrchr(exePath, L'\\')) *(p + 1) = L'\0';
-    const std::wstring fullPath = std::wstring(exePath) + fileName;
+    const std::wstring fullPath = OutputDir() + fileName;
 
     g_stream.open(fullPath, std::ios::out | std::ios::app);
     g_ready = g_stream.is_open();
 
-    if (g_ready) WriteLine(L"INFO", "Logger initialized");
+    if (g_ready) WriteLineLocked(L"INFO", "Logger initialized");
 }
 
 void Logger::Info(const char* fmt, ...)

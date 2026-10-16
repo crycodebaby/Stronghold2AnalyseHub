@@ -6,14 +6,19 @@
 
 #include <windows.h>
 #include <d3d9.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdarg>
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // ImGui core + backends (DX9 + Win32)
 #include "imgui.h"

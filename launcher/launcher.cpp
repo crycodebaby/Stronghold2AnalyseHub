@@ -1,0 +1,126 @@
+// SH2Launcher: start Stronghold 2 suspended, inject Stronghold2AnalyseHub.dll,
+// wait until its hooks are installed, then let the game run.
+//
+// Usage: SH2Launcher.exe <path\to\Stronghold2.exe> [path\to\Stronghold2AnalyseHub.dll] [--out <dir>]
+// Default DLL: next to SH2Launcher.exe.
+// Default output dir (log, CSVs, latest.json): <game folder>\SH2Perf_out.
+// Passed to the hub via the SH2HUB_OUT environment variable.
+//
+// Starting suspended guarantees the Direct3DCreate9 hook is in place before
+// the game creates its device (see SH2-Perf docs/DECISIONS.md D004).
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <cstdio>
+#include <string>
+
+namespace
+{
+    int Fail(const char* what)
+    {
+        fprintf(stderr, "SH2Launcher: %s failed (error %lu)\n", what, GetLastError());
+        return 1;
+    }
+
+    std::wstring DirOf(const std::wstring& path)
+    {
+        const size_t slash = path.find_last_of(L"\\/");
+        return slash == std::wstring::npos ? L"." : path.substr(0, slash);
+    }
+}
+
+int wmain(int argc, wchar_t** argv)
+{
+    // Split "--out <dir>" from the positional arguments.
+    const wchar_t* positional[2]{};
+    int npos = 0;
+    const wchar_t* outArg = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (wcscmp(argv[i], L"--out") == 0 && i + 1 < argc) outArg = argv[++i];
+        else if (npos < 2) positional[npos++] = argv[i];
+    }
+    if (npos < 1) {
+        fprintf(stderr, "usage: SH2Launcher.exe <Stronghold2.exe> [Stronghold2AnalyseHub.dll] [--out <dir>]\n");
+        return 2;
+    }
+
+    wchar_t exe[MAX_PATH], dll[MAX_PATH], out[MAX_PATH];
+    GetFullPathNameW(positional[0], MAX_PATH, exe, nullptr);
+    if (outArg) GetFullPathNameW(outArg, MAX_PATH, out, nullptr);
+    else swprintf_s(out, L"%s\\SH2Perf_out", DirOf(exe).c_str());
+    CreateDirectoryW(out, nullptr);
+    // Inherited by the game process; read by Logger::OutputDir().
+    SetEnvironmentVariableW(L"SH2HUB_OUT", out);
+
+    if (npos >= 2) {
+        GetFullPathNameW(positional[1], MAX_PATH, dll, nullptr);
+    } else {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        swprintf_s(dll, L"%s\\Stronghold2AnalyseHub.dll", DirOf(self).c_str());
+    }
+    if (GetFileAttributesW(dll) == INVALID_FILE_ATTRIBUTES) return Fail("finding the DLL");
+
+    const std::wstring workDir = DirOf(exe);
+    std::wstring cmdLine = L"\"" + std::wstring(exe) + L"\"";
+
+    STARTUPINFOW si{ sizeof(si) };
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(exe, cmdLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr,
+            workDir.c_str(), &si, &pi))
+        return Fail("CreateProcessW");
+
+    // Event the DLL signals once its hooks are installed.
+    wchar_t eventName[64];
+    swprintf_s(eventName, L"Local\\SH2AnalyseHub.Ready.%lu", pi.dwProcessId);
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, eventName);
+
+    const SIZE_T bytes = (wcslen(dll) + 1) * sizeof(wchar_t);
+    void* remote = VirtualAllocEx(pi.hProcess, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote || !WriteProcessMemory(pi.hProcess, remote, dll, bytes, nullptr)) {
+        TerminateProcess(pi.hProcess, 1);
+        return Fail("writing the DLL path");
+    }
+
+    // Launcher and game are both 32-bit, so kernel32 sits at the same address.
+    auto loadLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+    HANDLE thread = CreateRemoteThread(pi.hProcess, nullptr, 0, loadLibrary, remote, 0, nullptr);
+    if (!thread) {
+        TerminateProcess(pi.hProcess, 1);
+        return Fail("CreateRemoteThread");
+    }
+    WaitForSingleObject(thread, INFINITE);
+    DWORD module = 0;
+    GetExitCodeThread(thread, &module);
+    CloseHandle(thread);
+    VirtualFreeEx(pi.hProcess, remote, 0, MEM_RELEASE);
+    if (!module) {
+        TerminateProcess(pi.hProcess, 1);
+        fprintf(stderr, "SH2Launcher: LoadLibraryW returned NULL in the game process\n");
+        return 1;
+    }
+
+    // Wait for the hub, but notice if the game process dies meanwhile
+    // (an exception in the hub thread aborts the whole process).
+    HANDLE waitFor[2] = { ready, pi.hProcess };
+    const DWORD waited = WaitForMultipleObjects(2, waitFor, FALSE, 10000);
+    CloseHandle(ready);
+    if (waited == WAIT_OBJECT_0 + 1) {
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        fprintf(stderr, "SH2Launcher: game process ended before the hub was ready (exit code 0x%08lX)\n", code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
+    if (waited != WAIT_OBJECT_0)
+        fprintf(stderr, "SH2Launcher: no ready signal within 10 s; resuming anyway\n");
+
+    ResumeThread(pi.hThread);
+    printf("SH2Launcher: game PID %lu started with %ls\nSH2Launcher: output -> %ls\n",
+        pi.dwProcessId, dll, out);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
