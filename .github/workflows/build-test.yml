@@ -1,5 +1,5 @@
 # Win32 build and the game-free native tests. No Stronghold 2 files are needed or downloaded.
-# Prepared and run locally with the same commands (see CONTRIBUTING.md); a GitHub run has not happened yet.
+# Same commands as locally (see CONTRIBUTING.md); first GitHub runs 2026-10-17 (README "Version pair").
 name: build-test
 
 on:
