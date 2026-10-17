@@ -152,11 +152,20 @@ sharing a log (see CONTRIBUTING.md).
 
 ## Version pair
 
-The verified pair for the first public release is listed in the research repository (`README.md`, "Verified version
-pair"). On this branch the runtime sources (`Stronghold2AnalyseHub/`, `proxy/`, `launcher/`) are identical to
-`perf-metrics` commit `32ebc38a05ea`, the build used for the latest in-game recordings; later commits change only
-documentation, licensing, test registration and the check selection of `tests/sampler_test.cpp`. All earlier commit
-ids are kept (no rebase or squash), because recording manifests name them.
+First published on 2026-10-17: [PR #1](https://github.com/crycodebaby/Stronghold2AnalyseHub/pull/1) merged as
+`main` `d3a763a3377709eb5c0c71a53ea2e63b6b6ca5c7` (parents `be102cd` and `621a9d6`); the pair with the research
+repository is listed there (`README.md`, "Published state and version pair"). In that state the runtime sources
+(`Stronghold2AnalyseHub/`, `proxy/`, `launcher/`) are identical to commit `32ebc38a05ea`, the build used for the latest
+in-game recordings; the commits after it change only documentation, licensing, the CI workflow, test registration
+and the check selection of `tests/sampler_test.cpp`. All earlier commit ids are kept (no rebase, squash or force-push), because
+recording manifests and the research docs name them as provenance.
+
+GitHub CI `build-test` (game-free): green for
+[push `621a9d6`](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983295967),
+[PR #1](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983296023) and
+[`main` `d3a763a`](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983478344): Win32 build and 4/4
+gating tests. The `sampler_overhead` step is reported, not gating; it prints no number when it passes and failed in two
+local fresh clones the same day (5.5 % and 5.2 % > 5 %). A green run shows nothing about performance or behaviour in the game.
 
 ## Contributing
 
@@ -165,5 +174,5 @@ in the research repository.
 
 ## License
 
-MIT for this project's own code ([LICENSE.txt](LICENSE.txt)). Dear ImGui and MinHook keep their licenses
-([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Stronghold 2 and its files are not part of this repository.
+MIT for this project's own code ([LICENSE.txt](LICENSE.txt)). Dear ImGui and MinHook keep their licenses; scope of
+the MIT license and the vendored components: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Stronghold 2 and its files are not part of this repository.
