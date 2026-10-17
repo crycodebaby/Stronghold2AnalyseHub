@@ -164,8 +164,8 @@ GitHub CI `build-test` (game-free): green for
 [push `621a9d6`](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983295967),
 [PR #1](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983296023) and
 [`main` `d3a763a`](https://github.com/crycodebaby/Stronghold2AnalyseHub/actions/runs/38983478344): Win32 build and 4/4
-gating tests. The `sampler_overhead` step is reported, not gating; it prints no number when it passes and failed in a
-local fresh clone the same day (5.5 % > 5 %). A green run shows nothing about performance or behaviour in the game.
+gating tests. The `sampler_overhead` step is reported, not gating; it prints no number when it passes and failed in two
+local fresh clones the same day (5.5 % and 5.2 % > 5 %). A green run shows nothing about performance or behaviour in the game.
 
 ## Contributing
 
