@@ -1,5 +1,5 @@
 # Short Discord notices: new pull request, merged pull request (-> #changelog) and published release (-> #announcements).
-# Needs two repository secrets holding Discord webhook URLs; without them every run just skips (nothing fails):
+# Needs two repository secrets holding Discord webhook URLs; without them a run skips with a yellow warning (nothing fails):
 #   DISCORD_WEBHOOK_CHANGELOG       webhook of the #changelog channel
 #   DISCORD_WEBHOOK_ANNOUNCEMENTS   webhook of the #announcements channel
 # pull_request_target runs this file from the default branch and never checks out the pull request, so the secrets are
@@ -58,7 +58,10 @@ jobs:
             title="#$PR_NUMBER $PR_TITLE"; link="$PR_URL"; author="$PR_AUTHOR"; body="$PR_BODY"
           fi
 
-          if [ -z "$hook" ]; then echo "Webhook secret not set, skipping."; exit 0; fi
+          if [ -z "$hook" ]; then
+            echo "::warning title=Discord webhook missing::No webhook secret for this event (DISCORD_WEBHOOK_CHANGELOG for pull requests, DISCORD_WEBHOOK_ANNOUNCEMENTS for releases). Nothing was posted."
+            exit 0
+          fi
 
           # keep the explanation short: first 280 characters of the text, plain
           summary="$(printf '%s' "$body" | tr -d '\r' | head -c 280)"
@@ -72,4 +75,5 @@ jobs:
             --argjson color "$color" \
             '{allowed_mentions: {parse: []},
               embeds: [{title: $title, url: $url, description: $desc, color: $color}]}' \
-            | curl -sS --fail-with-body -H "Content-Type: application/json" -d @- "$hook"
+            | curl -sS --fail-with-body -H "Content-Type: application/json" -d @- "$hook" \
+            || echo "::warning title=Discord post failed::Discord did not accept the message. Check the webhook URL stored in the secret."
