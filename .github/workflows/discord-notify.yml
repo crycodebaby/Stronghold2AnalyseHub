@@ -1,0 +1,75 @@
+# Short Discord notices: new pull request, merged pull request (-> #changelog) and published release (-> #announcements).
+# Needs two repository secrets holding Discord webhook URLs; without them every run just skips (nothing fails):
+#   DISCORD_WEBHOOK_CHANGELOG       webhook of the #changelog channel
+#   DISCORD_WEBHOOK_ANNOUNCEMENTS   webhook of the #announcements channel
+# pull_request_target runs this file from the default branch and never checks out the pull request, so the secrets are
+# not exposed to code from forks. Titles and texts only travel as data (env -> jq), never as part of a shell command.
+name: discord-notify
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, closed]
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        continue-on-error: true   # a Discord outage must not turn a repository check red
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REL_NAME: ${{ github.event.release.name }}
+          REL_TAG: ${{ github.event.release.tag_name }}
+          REL_URL: ${{ github.event.release.html_url }}
+          REL_AUTHOR: ${{ github.event.release.author.login }}
+          REL_BODY: ${{ github.event.release.body }}
+          WEBHOOK_CHANGELOG: ${{ secrets.DISCORD_WEBHOOK_CHANGELOG }}
+          WEBHOOK_ANNOUNCEMENTS: ${{ secrets.DISCORD_WEBHOOK_ANNOUNCEMENTS }}
+        run: |
+          set -euo pipefail
+          short_repo="${REPO#*/}"
+
+          if [ "$EVENT" = "release" ]; then
+            hook="$WEBHOOK_ANNOUNCEMENTS"
+            label="New release"; color=15844367
+            title="${REL_NAME:-$REL_TAG}"; link="$REL_URL"; author="$REL_AUTHOR"; body="$REL_BODY"
+          else
+            hook="$WEBHOOK_CHANGELOG"
+            if [ "$ACTION" = "closed" ]; then
+              if [ "$PR_MERGED" != "true" ]; then echo "Closed without merge, nothing to post."; exit 0; fi
+              label="Merged"; color=5763719
+            else
+              if [ "$PR_DRAFT" = "true" ]; then echo "Draft pull request, nothing to post."; exit 0; fi
+              label="New pull request"; color=5793266
+            fi
+            title="#$PR_NUMBER $PR_TITLE"; link="$PR_URL"; author="$PR_AUTHOR"; body="$PR_BODY"
+          fi
+
+          if [ -z "$hook" ]; then echo "Webhook secret not set, skipping."; exit 0; fi
+
+          # keep the explanation short: first 280 characters of the text, plain
+          summary="$(printf '%s' "$body" | tr -d '\r' | head -c 280)"
+          desc="$label by $author"
+          if [ -n "$summary" ]; then desc="$desc"$'\n'"$summary"; fi
+
+          jq -n \
+            --arg title "[$short_repo] ${title:0:200}" \
+            --arg url "$link" \
+            --arg desc "$desc" \
+            --argjson color "$color" \
+            '{allowed_mentions: {parse: []},
+              embeds: [{title: $title, url: $url, description: $desc, color: $color}]}' \
+            | curl -sS --fail-with-body -H "Content-Type: application/json" -d @- "$hook"

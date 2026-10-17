@@ -40,6 +40,13 @@ If you have the research repository next to this one (`../Stronghold2Performance
 Game executables or DLLs (including the real `granny2.dll`), game data or assets, Ghidra databases, decompiled game code,
 raw recordings, or logs with personal paths. The `.gitignore` excludes build output; check `git status` anyway.
 
+## Discord notices
+
+`.github/workflows/discord-notify.yml` posts a short notice to the community Discord when a pull request is opened or
+merged (#changelog) and when a release is published (#announcements). It needs two repository secrets with Discord
+webhook URLs: `DISCORD_WEBHOOK_CHANGELOG` and `DISCORD_WEBHOOK_ANNOUNCEMENTS`. Without them the workflow skips and
+nothing fails. Titles and the first lines of the description are posted as plain text, so write them to be read there.
+
 ## Reporting a problem from the game
 
 Attach the relevant log lines and the `*_manifest.json` of the recording, with absolute paths and your user name
