@@ -1,7 +1,10 @@
 # Third-party notices
 
-The project's own code is under the MIT license in [LICENSE.txt](LICENSE.txt). The following vendored sources keep
-their original licenses and copyright notices. They are compiled into the hub DLL and the test programs, so binary
+The project's own code is under the MIT license in [LICENSE.txt](LICENSE.txt). Scope of that license (until
+2026-10-17 appended to `LICENSE.txt`, moved here unchanged so that the file contains only the MIT text): "This license
+covers the project's own files only. Files under external/ keep their own licenses; see THIRD_PARTY_NOTICES.md."
+
+The following vendored sources keep their original licenses and copyright notices. They are compiled into the hub DLL and the test programs, so binary
 redistributions must carry these notices as well.
 
 | Path | Component | Version in tree | License | Full text |

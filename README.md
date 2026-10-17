@@ -165,5 +165,5 @@ in the research repository.
 
 ## License
 
-MIT for this project's own code ([LICENSE.txt](LICENSE.txt)). Dear ImGui and MinHook keep their licenses
-([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Stronghold 2 and its files are not part of this repository.
+MIT for this project's own code ([LICENSE.txt](LICENSE.txt)). Dear ImGui and MinHook keep their licenses; scope of
+the MIT license and the vendored components: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Stronghold 2 and its files are not part of this repository.
